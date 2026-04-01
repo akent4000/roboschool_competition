@@ -7,7 +7,7 @@ class AliengoFlatCfg:
     seed = 1
 
     class env:
-        num_envs = 1024
+        num_envs = 512
         num_observations = 58
         num_observation_history = 5
         num_privileged_obs = None
@@ -234,8 +234,8 @@ class AliengoFlatCfg:
             rest_offset = 0.0
             bounce_threshold_velocity = 0.5
             max_depenetration_velocity = 1.0
-            max_gpu_contact_pairs = 2**23
-            default_buffer_size_multiplier = 5
+            max_gpu_contact_pairs = 2**20
+            default_buffer_size_multiplier = 2
             contact_collection = 2
 
 

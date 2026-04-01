@@ -11,8 +11,8 @@ assert isaacgym
 import torch
 import numpy as np
 
-import glob
 import pickle as pkl
+from pathlib import Path
 
 from aliengo_gym.envs import *
 from aliengo_gym.envs.base.legged_robot_config import Cfg
@@ -20,6 +20,14 @@ from aliengo_gym.envs.aliengo.aliengo_config import config_aliengo
 from aliengo_gym.envs.aliengo.velocity_tracking import VelocityTrackingEasyEnv
 
 from tqdm import tqdm
+
+
+def resolve_latest_run_dir():
+    runs_root = Path(__file__).resolve().parents[1] / "runs" / "gait-conditioned-agility"
+    candidates = [path for path in runs_root.glob("*/train/*") if path.is_dir()]
+    if not candidates:
+        raise FileNotFoundError(f"No training runs found under {runs_root}")
+    return max(candidates, key=lambda path: path.stat().st_mtime)
 
 def load_policy(logdir):
     body = torch.jit.load(logdir + '/checkpoints/body_latest.jit')
@@ -35,11 +43,8 @@ def load_policy(logdir):
     return policy
 
 
-def load_env(label, headless=False):
-    dirs = glob.glob(f"../runs/{label}/*")
-    logdir = sorted(dirs)[0]
-
-    with open(logdir + "/parameters.pkl", 'rb') as file:
+def load_env(logdir: Path, headless=False):
+    with open(logdir / "parameters.pkl", 'rb') as file:
         pkl_cfg = pkl.load(file)
         print(pkl_cfg.keys())
         cfg = pkl_cfg["Cfg"]
@@ -87,7 +92,7 @@ def load_env(label, headless=False):
     from ml_logger import logger
     from aliengo_gym_learn.ppo_cse.actor_critic import ActorCritic
 
-    policy = load_policy(logdir)
+    policy = load_policy(str(logdir))
 
     return env, policy
 
@@ -95,14 +100,12 @@ def load_env(label, headless=False):
 def play_aliengo(headless=True):
     from ml_logger import logger
 
-    from pathlib import Path
     from aliengo_gym import MINI_GYM_ROOT_DIR
     import glob
     import os
 
-    label = "gait-conditioned-agility/2026-02-10/train"
-
-    env, policy = load_env(label, headless=headless)
+    logdir = resolve_latest_run_dir()
+    env, policy = load_env(logdir, headless=headless)
 
     num_eval_steps = 1000
     gaits = {"pronking": [0, 0, 0],
@@ -168,7 +171,14 @@ def play_aliengo(headless=True):
     axs[1].set_ylabel("Joint Position (rad)")
 
     plt.tight_layout()
-    plt.show()
+    backend = plt.get_backend().lower()
+    if "agg" in backend:
+        output_path = logdir / "play_diagnostics.png"
+        fig.savefig(output_path, dpi=160, bbox_inches="tight")
+        print(f"Matplotlib backend '{backend}' has no GUI; saved plot to {output_path}")
+    else:
+        plt.show()
+    plt.close(fig)
 
 
 if __name__ == '__main__':

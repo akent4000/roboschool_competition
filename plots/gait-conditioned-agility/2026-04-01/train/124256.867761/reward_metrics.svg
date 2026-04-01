@@ -1,0 +1,260 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1192" height="3368" viewBox="0 0 1192 3368">
+<rect width="100%" height="100%" fill="white"/>
+<style>
+.title { font: 18px sans-serif; fill: #111827; }
+.label { font: 12px sans-serif; fill: #4b5563; }
+.tick { font: 11px sans-serif; fill: #6b7280; }
+</style>
+<g transform="translate(24,24)">
+<rect x="0" y="0" width="560" height="280" fill="white" stroke="#d1d5db"/>
+<line x1="42" y1="238" x2="518" y2="238" stroke="#9ca3af"/>
+<line x1="42" y1="42" x2="42" y2="238" stroke="#9ca3af"/>
+<polyline fill="none" stroke="#2563eb" stroke-width="2" points="42.00,238.00 62.70,234.55 83.39,233.17 104.09,234.55 124.78,235.93 145.48,237.31 166.17,237.31 186.87,236.62 207.57,236.62 228.26,235.24 248.96,232.48 269.65,221.44 290.35,215.23 311.04,213.15 331.74,210.39 352.43,208.32 373.13,195.90 393.83,180.72 414.52,160.01 435.22,133.79 455.91,87.55 476.61,45.45 497.30,42.00 518.00,73.06"/>
+<text class="title" x="42" y="26">total</text>
+<text class="label" x="280.0" y="270" text-anchor="middle">iteration</text>
+<text class="tick" x="42" y="256">0</text>
+<text class="tick" x="518" y="256" text-anchor="end">230</text>
+<text class="tick" x="34" y="46" text-anchor="end">0.285</text>
+<text class="tick" x="34" y="242" text-anchor="end">0.001</text>
+</g>
+<g transform="translate(608,24)">
+<rect x="0" y="0" width="560" height="280" fill="white" stroke="#d1d5db"/>
+<line x1="42" y1="238" x2="518" y2="238" stroke="#9ca3af"/>
+<line x1="42" y1="42" x2="42" y2="238" stroke="#9ca3af"/>
+<polyline fill="none" stroke="#2563eb" stroke-width="2" points="42.00,42.00 62.70,53.54 83.39,60.12 104.09,58.99 124.78,57.45 145.48,56.82 166.17,58.74 186.87,62.01 207.57,66.83 228.26,80.54 248.96,101.56 269.65,199.18 290.35,238.00 311.04,222.65 331.74,197.49 352.43,173.78 373.13,181.26 393.83,175.26 414.52,163.84 435.22,158.05 455.91,171.78 476.61,160.09 497.30,136.09 518.00,106.00"/>
+<text class="title" x="42" y="26">action rate</text>
+<text class="label" x="280.0" y="270" text-anchor="middle">iteration</text>
+<text class="tick" x="42" y="256">0</text>
+<text class="tick" x="518" y="256" text-anchor="end">230</text>
+<text class="tick" x="34" y="46" text-anchor="end">-0.04</text>
+<text class="tick" x="34" y="242" text-anchor="end">-7.82</text>
+</g>
+<g transform="translate(24,328)">
+<rect x="0" y="0" width="560" height="280" fill="white" stroke="#d1d5db"/>
+<line x1="42" y1="238" x2="518" y2="238" stroke="#9ca3af"/>
+<line x1="42" y1="42" x2="42" y2="238" stroke="#9ca3af"/>
+<polyline fill="none" stroke="#2563eb" stroke-width="2" points="42.00,42.00 62.70,54.21 83.39,61.20 104.09,59.89 124.78,58.19 145.48,57.39 166.17,59.27 186.87,62.56 207.57,67.33 228.26,81.02 248.96,102.03 269.65,200.63 290.35,238.00 311.04,220.62 331.74,193.87 352.43,169.45 373.13,175.92 393.83,169.51 414.52,158.26 435.22,152.47 455.91,165.25 476.61,153.66 497.30,130.60 518.00,102.03"/>
+<text class="title" x="42" y="26">action smoothness 1</text>
+<text class="label" x="280.0" y="270" text-anchor="middle">iteration</text>
+<text class="tick" x="42" y="256">0</text>
+<text class="tick" x="518" y="256" text-anchor="end">230</text>
+<text class="tick" x="34" y="46" text-anchor="end">-0.017</text>
+<text class="tick" x="34" y="242" text-anchor="end">-3.47</text>
+</g>
+<g transform="translate(608,328)">
+<rect x="0" y="0" width="560" height="280" fill="white" stroke="#d1d5db"/>
+<line x1="42" y1="238" x2="518" y2="238" stroke="#9ca3af"/>
+<line x1="42" y1="42" x2="42" y2="238" stroke="#9ca3af"/>
+<polyline fill="none" stroke="#2563eb" stroke-width="2" points="42.00,42.00 62.70,54.69 83.39,62.00 104.09,60.67 124.78,58.81 145.48,57.94 166.17,59.76 186.87,63.03 207.57,67.79 228.26,81.69 248.96,102.70 269.65,202.10 290.35,238.00 311.04,218.37 331.74,189.57 352.43,163.52 373.13,167.57 393.83,159.48 414.52,147.03 435.22,139.65 455.91,149.45 476.61,137.79 497.30,117.23 518.00,92.69"/>
+<text class="title" x="42" y="26">action smoothness 2</text>
+<text class="label" x="280.0" y="270" text-anchor="middle">iteration</text>
+<text class="tick" x="42" y="256">0</text>
+<text class="tick" x="518" y="256" text-anchor="end">230</text>
+<text class="tick" x="34" y="46" text-anchor="end">-0.05</text>
+<text class="tick" x="34" y="242" text-anchor="end">-9.94</text>
+</g>
+<g transform="translate(24,632)">
+<rect x="0" y="0" width="560" height="280" fill="white" stroke="#d1d5db"/>
+<line x1="42" y1="238" x2="518" y2="238" stroke="#9ca3af"/>
+<line x1="42" y1="42" x2="42" y2="238" stroke="#9ca3af"/>
+<polyline fill="none" stroke="#2563eb" stroke-width="2" points="42.00,42.00 62.70,73.14 83.39,80.47 104.09,78.64 124.78,76.80 145.48,76.80 166.17,80.47 186.87,84.13 207.57,87.79 228.26,100.62 248.96,120.77 269.65,192.21 290.35,219.68 311.04,214.19 331.74,199.53 352.43,188.54 373.13,206.86 393.83,212.36 414.52,212.36 435.22,217.85 455.91,238.00 476.61,232.50 497.30,206.86 518.00,170.22"/>
+<text class="title" x="42" y="26">ang vel xy</text>
+<text class="label" x="280.0" y="270" text-anchor="middle">iteration</text>
+<text class="tick" x="42" y="256">0</text>
+<text class="tick" x="518" y="256" text-anchor="end">230</text>
+<text class="tick" x="34" y="46" text-anchor="end">-0.001</text>
+<text class="tick" x="34" y="242" text-anchor="end">-0.108</text>
+</g>
+<g transform="translate(608,632)">
+<rect x="0" y="0" width="560" height="280" fill="white" stroke="#d1d5db"/>
+<line x1="42" y1="238" x2="518" y2="238" stroke="#9ca3af"/>
+<line x1="42" y1="42" x2="42" y2="238" stroke="#9ca3af"/>
+<polyline fill="none" stroke="#2563eb" stroke-width="2" points="42.00,42.00 62.70,46.23 83.39,47.62 104.09,46.89 124.78,44.91 145.48,44.07 166.17,44.75 186.87,46.04 207.57,47.70 228.26,52.81 248.96,60.12 269.65,130.65 290.35,193.70 311.04,207.19 331.74,212.87 352.43,217.99 373.13,238.00 393.83,213.76 414.52,182.23 435.22,163.46 455.91,187.71 476.61,158.62 497.30,123.28 518.00,84.61"/>
+<text class="title" x="42" y="26">collision</text>
+<text class="label" x="280.0" y="270" text-anchor="middle">iteration</text>
+<text class="tick" x="42" y="256">0</text>
+<text class="tick" x="518" y="256" text-anchor="end">230</text>
+<text class="tick" x="34" y="46" text-anchor="end">-0.012</text>
+<text class="tick" x="34" y="242" text-anchor="end">-34.6</text>
+</g>
+<g transform="translate(24,936)">
+<rect x="0" y="0" width="560" height="280" fill="white" stroke="#d1d5db"/>
+<line x1="42" y1="238" x2="518" y2="238" stroke="#9ca3af"/>
+<line x1="42" y1="42" x2="42" y2="238" stroke="#9ca3af"/>
+<polyline fill="none" stroke="#2563eb" stroke-width="2" points="42.00,42.00 62.70,61.76 83.39,70.09 104.09,69.45 124.78,69.54 145.48,70.18 166.17,73.09 186.87,77.97 207.57,83.82 228.26,99.38 248.96,122.82 269.65,210.83 290.35,238.00 311.04,223.31 331.74,200.10 352.43,186.74 373.13,203.32 393.83,205.16 414.52,201.07 435.22,203.64 455.91,219.03 476.61,204.66 497.30,172.97 518.00,136.32"/>
+<text class="title" x="42" y="26">dof acc</text>
+<text class="label" x="280.0" y="270" text-anchor="middle">iteration</text>
+<text class="tick" x="42" y="256">0</text>
+<text class="tick" x="518" y="256" text-anchor="end">230</text>
+<text class="tick" x="34" y="46" text-anchor="end">-0.037</text>
+<text class="tick" x="34" y="242" text-anchor="end">-4.29</text>
+</g>
+<g transform="translate(608,936)">
+<rect x="0" y="0" width="560" height="280" fill="white" stroke="#d1d5db"/>
+<line x1="42" y1="238" x2="518" y2="238" stroke="#9ca3af"/>
+<line x1="42" y1="42" x2="42" y2="238" stroke="#9ca3af"/>
+<polyline fill="none" stroke="#2563eb" stroke-width="2" points="42.00,42.82 62.70,43.09 83.39,43.36 104.09,43.64 124.78,43.91 145.48,42.82 166.17,42.27 186.87,42.00 207.57,42.27 228.26,42.55 248.96,43.64 269.65,72.85 290.35,94.14 311.04,82.13 331.74,87.59 352.43,183.13 373.13,238.00 393.83,224.62 414.52,192.41 435.22,165.11 455.91,196.23 476.61,123.08 497.30,116.25 518.00,128.26"/>
+<text class="title" x="42" y="26">dof pos limits</text>
+<text class="label" x="280.0" y="270" text-anchor="middle">iteration</text>
+<text class="tick" x="42" y="256">0</text>
+<text class="tick" x="518" y="256" text-anchor="end">230</text>
+<text class="tick" x="34" y="46" text-anchor="end">-0.001</text>
+<text class="tick" x="34" y="242" text-anchor="end">-0.719</text>
+</g>
+<g transform="translate(24,1240)">
+<rect x="0" y="0" width="560" height="280" fill="white" stroke="#d1d5db"/>
+<line x1="42" y1="238" x2="518" y2="238" stroke="#9ca3af"/>
+<line x1="42" y1="42" x2="42" y2="238" stroke="#9ca3af"/>
+<polyline fill="none" stroke="#2563eb" stroke-width="2" points="42.00,42.00 62.70,57.08 83.39,62.63 104.09,62.23 124.78,62.23 145.48,63.03 166.17,65.01 186.87,68.98 207.57,73.74 228.26,86.04 248.96,104.69 269.65,176.11 290.35,200.31 311.04,191.18 331.74,176.90 352.43,172.14 373.13,194.36 393.83,202.29 414.52,204.67 435.22,214.99 455.91,238.00 476.61,228.08 497.30,195.15 518.00,155.87"/>
+<text class="title" x="42" y="26">dof vel</text>
+<text class="label" x="280.0" y="270" text-anchor="middle">iteration</text>
+<text class="tick" x="42" y="256">0</text>
+<text class="tick" x="518" y="256" text-anchor="end">230</text>
+<text class="tick" x="34" y="46" text-anchor="end">-0.005</text>
+<text class="tick" x="34" y="242" text-anchor="end">-0.499</text>
+</g>
+<g transform="translate(608,1240)">
+<rect x="0" y="0" width="560" height="280" fill="white" stroke="#d1d5db"/>
+<line x1="42" y1="238" x2="518" y2="238" stroke="#9ca3af"/>
+<line x1="42" y1="42" x2="42" y2="238" stroke="#9ca3af"/>
+<polyline fill="none" stroke="#2563eb" stroke-width="2" points="42.00,42.00 62.70,74.56 83.39,83.78 104.09,79.60 124.78,75.11 145.48,72.17 166.17,72.73 186.87,75.01 207.57,78.47 228.26,92.58 248.96,113.20 269.65,206.86 290.35,238.00 311.04,225.68 331.74,206.48 352.43,187.01 373.13,194.32 393.83,183.57 414.52,171.22 435.22,160.26 455.91,170.41 476.61,157.19 497.30,140.24 518.00,119.38"/>
+<text class="title" x="42" y="26">feet clearance cmd linear</text>
+<text class="label" x="280.0" y="270" text-anchor="middle">iteration</text>
+<text class="tick" x="42" y="256">0</text>
+<text class="tick" x="518" y="256" text-anchor="end">230</text>
+<text class="tick" x="34" y="46" text-anchor="end">-0.117</text>
+<text class="tick" x="34" y="242" text-anchor="end">-13.7</text>
+</g>
+<g transform="translate(24,1544)">
+<rect x="0" y="0" width="560" height="280" fill="white" stroke="#d1d5db"/>
+<line x1="42" y1="238" x2="518" y2="238" stroke="#9ca3af"/>
+<line x1="42" y1="42" x2="42" y2="238" stroke="#9ca3af"/>
+<polyline fill="none" stroke="#2563eb" stroke-width="2" points="42.00,42.00 62.70,48.95 83.39,53.42 104.09,52.68 124.78,51.19 145.48,50.32 166.17,52.55 186.87,55.53 207.57,59.01 228.26,70.80 248.96,91.78 269.65,212.55 290.35,238.00 311.04,203.37 331.74,174.07 352.43,169.85 373.13,183.01 393.83,170.97 414.52,159.30 435.22,164.39 455.91,186.11 476.61,166.01 497.30,134.60 518.00,109.40"/>
+<text class="title" x="42" y="26">feet slip</text>
+<text class="label" x="280.0" y="270" text-anchor="middle">iteration</text>
+<text class="tick" x="42" y="256">0</text>
+<text class="tick" x="518" y="256" text-anchor="end">230</text>
+<text class="tick" x="34" y="46" text-anchor="end">-0.003</text>
+<text class="tick" x="34" y="242" text-anchor="end">-1.58</text>
+</g>
+<g transform="translate(608,1544)">
+<rect x="0" y="0" width="560" height="280" fill="white" stroke="#d1d5db"/>
+<line x1="42" y1="238" x2="518" y2="238" stroke="#9ca3af"/>
+<line x1="42" y1="42" x2="42" y2="238" stroke="#9ca3af"/>
+<polyline fill="none" stroke="#2563eb" stroke-width="2" points="42.00,42.00 62.70,128.59 83.39,151.41 104.09,134.63 124.78,121.88 145.48,121.21 166.17,127.92 186.87,131.95 207.57,137.99 228.26,156.78 248.96,182.29 269.65,229.95 290.35,238.00 311.04,203.10 331.74,184.97 352.43,191.01 373.13,203.10 393.83,189.67 414.52,184.30 435.22,194.37 455.91,198.40 476.61,192.36 497.30,189.67 518.00,205.11"/>
+<text class="title" x="42" y="26">jump</text>
+<text class="label" x="280.0" y="270" text-anchor="middle">iteration</text>
+<text class="tick" x="42" y="256">0</text>
+<text class="tick" x="518" y="256" text-anchor="end">230</text>
+<text class="tick" x="34" y="46" text-anchor="end">-0.037</text>
+<text class="tick" x="34" y="242" text-anchor="end">-0.329</text>
+</g>
+<g transform="translate(24,1848)">
+<rect x="0" y="0" width="560" height="280" fill="white" stroke="#d1d5db"/>
+<line x1="42" y1="238" x2="518" y2="238" stroke="#9ca3af"/>
+<line x1="42" y1="42" x2="42" y2="238" stroke="#9ca3af"/>
+<polyline fill="none" stroke="#2563eb" stroke-width="2" points="42.00,42.00 62.70,126.00 83.39,140.00 104.09,133.00 124.78,126.00 145.48,126.00 166.17,140.00 186.87,140.00 207.57,140.00 228.26,154.00 248.96,168.00 269.65,182.00 290.35,175.00 311.04,168.00 331.74,161.00 352.43,168.00 373.13,182.00 393.83,189.00 414.52,196.00 435.22,210.00 455.91,231.00 476.61,238.00 497.30,238.00 518.00,224.00"/>
+<text class="title" x="42" y="26">lin vel z</text>
+<text class="label" x="280.0" y="270" text-anchor="middle">iteration</text>
+<text class="tick" x="42" y="256">0</text>
+<text class="tick" x="518" y="256" text-anchor="end">230</text>
+<text class="tick" x="34" y="46" text-anchor="end">-0.004</text>
+<text class="tick" x="34" y="242" text-anchor="end">-0.032</text>
+</g>
+<g transform="translate(608,1848)">
+<rect x="0" y="0" width="560" height="280" fill="white" stroke="#d1d5db"/>
+<line x1="42" y1="238" x2="518" y2="238" stroke="#9ca3af"/>
+<line x1="42" y1="42" x2="42" y2="238" stroke="#9ca3af"/>
+<polyline fill="none" stroke="#2563eb" stroke-width="2" points="42.00,42.00 62.70,92.69 83.39,103.44 104.09,104.18 124.78,97.37 145.48,92.85 166.17,95.92 186.87,101.89 207.57,106.81 228.26,120.98 248.96,141.69 269.65,209.58 290.35,231.86 311.04,223.49 331.74,204.67 352.43,205.27 373.13,229.51 393.83,238.00 414.52,222.10 435.22,217.60 455.91,212.48 476.61,186.22 497.30,180.28 518.00,173.81"/>
+<text class="title" x="42" y="26">orientation control</text>
+<text class="label" x="280.0" y="270" text-anchor="middle">iteration</text>
+<text class="tick" x="42" y="256">0</text>
+<text class="tick" x="518" y="256" text-anchor="end">230</text>
+<text class="tick" x="34" y="46" text-anchor="end">-0.052</text>
+<text class="tick" x="34" y="242" text-anchor="end">-10.1</text>
+</g>
+<g transform="translate(24,2152)">
+<rect x="0" y="0" width="560" height="280" fill="white" stroke="#d1d5db"/>
+<line x1="42" y1="238" x2="518" y2="238" stroke="#9ca3af"/>
+<line x1="42" y1="42" x2="42" y2="238" stroke="#9ca3af"/>
+<polyline fill="none" stroke="#2563eb" stroke-width="2" points="42.00,42.00 62.70,77.46 83.39,83.78 104.09,81.39 124.78,80.04 145.48,78.47 166.17,77.98 186.87,81.03 207.57,84.36 228.26,98.89 248.96,118.43 269.65,203.62 290.35,238.00 311.04,237.46 331.74,226.41 352.43,218.28 373.13,233.89 393.83,226.82 414.52,215.87 435.22,202.80 455.91,212.39 476.61,186.69 497.30,155.47 518.00,127.56"/>
+<text class="title" x="42" y="26">raibert heuristic</text>
+<text class="label" x="280.0" y="270" text-anchor="middle">iteration</text>
+<text class="tick" x="42" y="256">0</text>
+<text class="tick" x="518" y="256" text-anchor="end">230</text>
+<text class="tick" x="34" y="46" text-anchor="end">-0.195</text>
+<text class="tick" x="34" y="242" text-anchor="end">-19.5</text>
+</g>
+<g transform="translate(608,2152)">
+<rect x="0" y="0" width="560" height="280" fill="white" stroke="#d1d5db"/>
+<line x1="42" y1="238" x2="518" y2="238" stroke="#9ca3af"/>
+<line x1="42" y1="42" x2="42" y2="238" stroke="#9ca3af"/>
+<polyline fill="none" stroke="#2563eb" stroke-width="2" points="42.00,42.00 62.70,58.54 83.39,66.09 104.09,64.47 124.78,64.32 145.48,63.86 166.17,66.09 186.87,71.11 207.57,76.37 228.26,79.31 248.96,91.23 269.65,153.81 290.35,213.69 311.04,203.26 331.74,175.78 352.43,171.05 373.13,192.61 393.83,210.49 414.52,185.89 435.22,238.00 455.91,221.46 476.61,223.12 497.30,178.30 518.00,129.47"/>
+<text class="title" x="42" y="26">stand still</text>
+<text class="label" x="280.0" y="270" text-anchor="middle">iteration</text>
+<text class="tick" x="42" y="256">0</text>
+<text class="tick" x="518" y="256" text-anchor="end">230</text>
+<text class="tick" x="34" y="46" text-anchor="end">0</text>
+<text class="tick" x="34" y="242" text-anchor="end">-49.2</text>
+</g>
+<g transform="translate(24,2456)">
+<rect x="0" y="0" width="560" height="280" fill="white" stroke="#d1d5db"/>
+<line x1="42" y1="238" x2="518" y2="238" stroke="#9ca3af"/>
+<line x1="42" y1="42" x2="42" y2="238" stroke="#9ca3af"/>
+<polyline fill="none" stroke="#2563eb" stroke-width="2" points="42.00,42.00 62.70,54.37 83.39,60.46 104.09,58.52 124.78,55.86 145.48,54.31 166.17,55.54 186.87,58.13 207.57,62.34 228.26,74.84 248.96,94.34 269.65,193.57 290.35,238.00 311.04,227.64 331.74,207.62 352.43,189.29 373.13,202.18 393.83,196.68 414.52,186.31 435.22,184.11 455.91,209.57 476.61,200.69 497.30,174.13 518.00,133.91"/>
+<text class="title" x="42" y="26">torques</text>
+<text class="label" x="280.0" y="270" text-anchor="middle">iteration</text>
+<text class="tick" x="42" y="256">0</text>
+<text class="tick" x="518" y="256" text-anchor="end">230</text>
+<text class="tick" x="34" y="46" text-anchor="end">-0.025</text>
+<text class="tick" x="34" y="242" text-anchor="end">-3.05</text>
+</g>
+<g transform="translate(608,2456)">
+<rect x="0" y="0" width="560" height="280" fill="white" stroke="#d1d5db"/>
+<line x1="42" y1="238" x2="518" y2="238" stroke="#9ca3af"/>
+<line x1="42" y1="42" x2="42" y2="238" stroke="#9ca3af"/>
+<polyline fill="none" stroke="#2563eb" stroke-width="2" points="42.00,238.00 62.70,221.53 83.39,214.93 104.09,218.41 124.78,222.50 145.48,225.06 166.17,224.56 186.87,222.59 207.57,219.56 228.26,209.52 248.96,192.86 269.65,112.55 290.35,73.01 311.04,77.14 331.74,87.73 352.43,100.39 373.13,82.04 393.83,75.62 414.52,78.97 435.22,79.29 455.91,42.00 476.61,47.27 497.30,74.34 518.00,119.61"/>
+<text class="title" x="42" y="26">tracking ang vel</text>
+<text class="label" x="280.0" y="270" text-anchor="middle">iteration</text>
+<text class="tick" x="42" y="256">0</text>
+<text class="tick" x="518" y="256" text-anchor="end">230</text>
+<text class="tick" x="34" y="46" text-anchor="end">4.29</text>
+<text class="tick" x="34" y="242" text-anchor="end">0.022</text>
+</g>
+<g transform="translate(24,2760)">
+<rect x="0" y="0" width="560" height="280" fill="white" stroke="#d1d5db"/>
+<line x1="42" y1="238" x2="518" y2="238" stroke="#9ca3af"/>
+<line x1="42" y1="42" x2="42" y2="238" stroke="#9ca3af"/>
+<polyline fill="none" stroke="#2563eb" stroke-width="2" points="42.00,42.00 62.70,57.53 83.39,66.10 104.09,61.77 124.78,56.19 145.48,52.75 166.17,53.42 186.87,55.29 207.57,59.02 228.26,71.17 248.96,90.81 269.65,195.78 290.35,238.00 311.04,219.63 331.74,194.42 352.43,169.46 373.13,171.81 393.83,159.26 414.52,142.86 435.22,133.36 455.91,146.41 476.61,136.55 497.30,119.54 518.00,95.35"/>
+<text class="title" x="42" y="26">tracking contacts shaped force</text>
+<text class="label" x="280.0" y="270" text-anchor="middle">iteration</text>
+<text class="tick" x="42" y="256">0</text>
+<text class="tick" x="518" y="256" text-anchor="end">230</text>
+<text class="tick" x="34" y="46" text-anchor="end">-0.166</text>
+<text class="tick" x="34" y="242" text-anchor="end">-22</text>
+</g>
+<g transform="translate(608,2760)">
+<rect x="0" y="0" width="560" height="280" fill="white" stroke="#d1d5db"/>
+<line x1="42" y1="238" x2="518" y2="238" stroke="#9ca3af"/>
+<line x1="42" y1="42" x2="42" y2="238" stroke="#9ca3af"/>
+<polyline fill="none" stroke="#2563eb" stroke-width="2" points="42.00,42.00 62.70,73.23 83.39,81.83 104.09,79.82 124.78,78.10 145.48,77.76 166.17,80.65 186.87,85.14 207.57,90.34 228.26,105.77 248.96,129.25 269.65,216.37 290.35,238.00 311.04,218.67 331.74,194.40 352.43,186.81 373.13,204.92 393.83,202.57 414.52,194.82 435.22,196.58 455.91,203.37 476.61,184.96 497.30,159.31 518.00,138.85"/>
+<text class="title" x="42" y="26">tracking contacts shaped vel</text>
+<text class="label" x="280.0" y="270" text-anchor="middle">iteration</text>
+<text class="tick" x="42" y="256">0</text>
+<text class="tick" x="518" y="256" text-anchor="end">230</text>
+<text class="tick" x="34" y="46" text-anchor="end">-0.076</text>
+<text class="tick" x="34" y="242" text-anchor="end">-4.75</text>
+</g>
+<g transform="translate(24,3064)">
+<rect x="0" y="0" width="560" height="280" fill="white" stroke="#d1d5db"/>
+<line x1="42" y1="238" x2="518" y2="238" stroke="#9ca3af"/>
+<line x1="42" y1="42" x2="42" y2="238" stroke="#9ca3af"/>
+<polyline fill="none" stroke="#2563eb" stroke-width="2" points="42.00,238.00 62.70,225.91 83.39,219.85 104.09,222.90 124.78,226.08 145.48,228.00 166.17,227.75 186.87,225.79 207.57,222.78 228.26,217.04 248.96,202.66 269.65,140.59 290.35,90.85 311.04,93.91 331.74,109.80 352.43,120.22 373.13,105.58 393.83,93.36 414.52,93.70 435.22,69.40 455.91,55.47 476.61,42.00 497.30,67.56 518.00,113.86"/>
+<text class="title" x="42" y="26">tracking lin vel</text>
+<text class="label" x="280.0" y="270" text-anchor="middle">iteration</text>
+<text class="tick" x="42" y="256">0</text>
+<text class="tick" x="518" y="256" text-anchor="end">230</text>
+<text class="tick" x="34" y="46" text-anchor="end">4.7</text>
+<text class="tick" x="34" y="242" text-anchor="end">0.013</text>
+</g>
+</svg>

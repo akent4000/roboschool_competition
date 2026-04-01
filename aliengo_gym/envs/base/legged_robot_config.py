@@ -83,8 +83,8 @@ class Cfg(PrefixProto, cli=False):
         max_init_terrain_level = 5  # starting curriculum state
         terrain_length = 8.
         terrain_width = 8.
-        num_rows = 10  # number of terrain rows (levels)
-        num_cols = 20  # number of terrain cols (types)
+        num_rows = 15  # number of terrain rows (levels)
+        num_cols = 15  # number of terrain cols (types)
         # terrain types: [smooth slope, rough slope, stairs up, stairs down, discrete]
         terrain_proportions = [0.1, 0.1, 0.35, 0.25, 0.2]
         # trimesh only:
@@ -191,6 +191,7 @@ class Cfg(PrefixProto, cli=False):
         pacing_offset = False
         balance_gait_distribution = True
         gaitwise_curricula = True
+        fixed_gait = None
 
     class curriculum_thresholds(PrefixProto, cli=False):
         tracking_lin_vel = 0.8  # closer to 1 is tighter

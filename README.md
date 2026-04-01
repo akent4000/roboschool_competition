@@ -45,9 +45,14 @@ Or, to build and start in one step:
 ```bash
 ./docker/ctl.sh build
 ./docker/ctl.sh up
+./docker/ctl.sh train
+./docker/ctl.sh play
+./docker/ctl.sh controller
+./docker/ctl.sh viz-up
 ./docker/ctl.sh enter
+./docker/ctl.sh viz-enter
 ./docker/ctl.sh down
-./docker/ctl.sh logs
+./docker/ctl.sh logs   # latest training outputs.log, fallback to container logs
 python scripts/train.py --task aliengo_flat --headless
 python scripts/play.py --task aliengo_flat --headless --vx 0.5 --vy 0.0 --vw 0.0 --pitch 0.0
 python scripts/controller.py --task aliengo_flat --mode sim --headless
@@ -58,6 +63,27 @@ python scripts/plot_training.py
 
 ```bash
 ./docker/ctl.sh enter
+```
+
+## Visualization
+
+To use the Isaac Gym viewer from inside the container on a Linux desktop, allow local X11 access first:
+
+```bash
+xhost +local:root
+```
+
+Then start the visualization-enabled container:
+
+```bash
+./docker/ctl.sh viz-up
+./docker/ctl.sh viz-enter
+```
+
+When you are done, you can revoke the access with:
+
+```bash
+xhost -local:root
 ```
 
 ## Train

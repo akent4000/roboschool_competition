@@ -16,42 +16,104 @@ class StepResult:
 
 
 class SimAliengoRobot(AliengoRobotInterface):
+    CMD_VX = 0
+    CMD_VY = 1
+    CMD_VW = 2
+    CMD_BODY_PITCH = 10
+
     def __init__(self, env, policy):
         self.env = env
         self.policy = policy
         self._speed = torch.zeros(3, device=self.env.device)
         self._pitch = torch.tensor(0.0, device=self.env.device)
+        self._command_template = None
         self._last_result = StepResult(
             observation=self.env.get_observations(),
             reward=None,
             done=None,
             info={},
         )
+        self._refresh_command_template()
+
+    def _unwrap_env(self):
+        env = self.env
+        while hasattr(env, "env") and getattr(env, "env") is not env:
+            env = env.env
+        return env
+
+    def _refresh_command_template(self) -> None:
+        base_env = self._unwrap_env()
+        if hasattr(base_env, "commands"):
+            self._command_template = base_env.commands[0].detach().clone()
+
+    def _apply_command(self) -> None:
+        if hasattr(self.env, "set_command"):
+            self.env.set_command(
+                float(self._speed[0].item()),
+                float(self._speed[1].item()),
+                float(self._speed[2].item()),
+                float(self._pitch.item()),
+            )
+            return
+
+        base_env = self._unwrap_env()
+        if self._command_template is None:
+            self._refresh_command_template()
+        if self._command_template is None or not hasattr(base_env, "commands"):
+            raise AttributeError("Environment does not expose a controllable command interface.")
+
+        command = self._command_template.clone()
+        command[self.CMD_VX] = float(self._speed[0].item())
+        command[self.CMD_VY] = float(self._speed[1].item())
+        command[self.CMD_VW] = float(self._speed[2].item())
+        if command.shape[0] > self.CMD_BODY_PITCH:
+            command[self.CMD_BODY_PITCH] = float(self._pitch.item())
+        base_env.commands[:] = command.unsqueeze(0).repeat(base_env.num_envs, 1)
 
     def set_speed(self, vx: float, vy: float, vw: float) -> None:
         self._speed = torch.tensor([vx, vy, vw], device=self.env.device, dtype=torch.float32)
-        self.env.set_command(float(vx), float(vy), float(vw), float(self._pitch.item()))
+        self._apply_command()
 
     def set_body_pitch(self, pitch: float) -> None:
         self._pitch = torch.tensor(float(pitch), device=self.env.device, dtype=torch.float32)
-        self.env.set_command(float(self._speed[0].item()), float(self._speed[1].item()), float(self._speed[2].item()), float(self._pitch.item()))
+        self._apply_command()
 
     def stop(self) -> None:
         self._speed.zero_()
         self._pitch.zero_()
-        self.env.set_command(0.0, 0.0, 0.0, 0.0)
+        self._apply_command()
 
     def reset(self):
-        obs, privileged_obs = self.env.reset()
-        self._last_result = StepResult(observation=obs, reward=None, done=None, info={"privileged_obs": privileged_obs})
+        result = self.env.reset()
+        if isinstance(result, tuple) and len(result) == 2:
+            obs, privileged_obs = result
+            info = {"privileged_obs": privileged_obs}
+        else:
+            obs = result
+            info = {}
+            if isinstance(obs, dict) and "privileged_obs" in obs:
+                info["privileged_obs"] = obs["privileged_obs"]
+        self._last_result = StepResult(observation=obs, reward=None, done=None, info=info)
+        self._refresh_command_template()
+        self._apply_command()
         return obs
 
     def step(self):
         obs = self.env.get_observations()
-        action = self.policy(obs.detach())
-        obs, privileged_obs, reward, done, info = self.env.step(action.detach())
+        policy_input = obs.detach() if hasattr(obs, "detach") else obs
+        action = self.policy(policy_input)
+        env_action = action.detach() if hasattr(action, "detach") else action
+        result = self.env.step(env_action)
+        if isinstance(result, tuple) and len(result) == 5:
+            obs, privileged_obs, reward, done, info = result
+            info["privileged_obs"] = privileged_obs
+        elif isinstance(result, tuple) and len(result) == 4:
+            obs, reward, done, info = result
+            if isinstance(obs, dict) and "privileged_obs" in obs:
+                info["privileged_obs"] = obs["privileged_obs"]
+        else:
+            raise ValueError("Unexpected environment step() return format.")
         self._last_result = StepResult(observation=obs, reward=reward, done=done, info=info)
-        self._last_result.info["privileged_obs"] = privileged_obs
         return obs, reward, done, info
 
     def get_camera(self):

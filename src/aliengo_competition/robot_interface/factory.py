@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 from aliengo_competition.common.helpers import get_args
-from aliengo_competition.common.task_registry import task_registry
-from aliengo_competition import envs as _registered_envs  # noqa: F401
 from aliengo_competition.robot_interface.sim import SimAliengoRobot
+from scripts.play import load_env, resolve_latest_run_dir
 
 
 def _clone_args(args, *, task: str, mode: str, headless: bool, load_run=-1, checkpoint=-1):
@@ -20,6 +20,21 @@ def _clone_args(args, *, task: str, mode: str, headless: bool, load_run=-1, chec
     return clone
 
 
+def _resolve_run_dir(load_run=-1) -> Path:
+    if load_run in (-1, None, "-1"):
+        return resolve_latest_run_dir()
+
+    candidate = Path(str(load_run)).expanduser()
+    if candidate.is_dir():
+        return candidate.resolve()
+
+    runs_root = Path(__file__).resolve().parents[3] / "runs" / "gait-conditioned-agility"
+    matches = sorted(path for path in runs_root.glob(f"*/train/{load_run}") if path.is_dir())
+    if not matches:
+        raise FileNotFoundError(f"Could not resolve training run '{load_run}' under {runs_root}")
+    return matches[-1]
+
+
 def make_robot_interface(
     *,
     args=None,
@@ -31,17 +46,11 @@ def make_robot_interface(
 ):
     if args is None:
         args = get_args()
-    cloned_args = _clone_args(args, task=task, mode=mode, headless=headless, load_run=load_run, checkpoint=checkpoint)
+    _clone_args(args, task=task, mode=mode, headless=headless, load_run=load_run, checkpoint=checkpoint)
+    if checkpoint not in (-1, None):
+        print("Explicit checkpoints are ignored for controller demo; using the latest exported JIT policy from the selected run.")
 
-    env_cfg, train_cfg = task_registry.get_cfgs(task)
-    env_cfg.env.num_envs = 1
-    env_cfg.seed = train_cfg.seed
-    train_cfg.runner.resume = True
-    train_cfg.runner.load_run = cloned_args.load_run
-    train_cfg.runner.checkpoint = cloned_args.checkpoint
-
-    env, _ = task_registry.make_env(task, args=cloned_args, env_cfg=env_cfg)
-    runner, _ = task_registry.make_alg_runner(env, name=task, args=cloned_args, train_cfg=train_cfg, log_root=None)
-    policy = runner.get_inference_policy(device=env.device)
-
+    run_dir = _resolve_run_dir(load_run)
+    print(f"Loading controller low-level policy from: {run_dir}")
+    env, policy = load_env(run_dir, headless=headless)
     return SimAliengoRobot(env=env, policy=policy)

@@ -5,8 +5,8 @@ def base_set():
     # set basics
     Cfg.terrain.teleport_robots = True
     Cfg.terrain.border_size = 50
-    Cfg.terrain.num_rows = 10
-    Cfg.terrain.num_cols = 10
+    Cfg.terrain.num_rows = 15
+    Cfg.terrain.num_cols = 15
     Cfg.commands.resampling_time = 1e9
     Cfg.env.episode_length_s = 500
     Cfg.rewards.terminal_body_height = 0.0

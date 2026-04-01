@@ -1300,8 +1300,13 @@ class LeggedRobot(BaseTask):
     def _init_command_distribution(self, env_ids):
         # new style curriculum
         self.category_names = ['nominal']
+        fixed_gait = getattr(self.cfg.commands, "fixed_gait", None)
+        if fixed_gait is not None:
+            self.category_names = [fixed_gait]
         if self.cfg.commands.gaitwise_curricula:
             self.category_names = ['pronk', 'trot', 'pace', 'bound']
+            if fixed_gait is not None:
+                self.category_names = [fixed_gait]
 
         if self.cfg.commands.curriculum_type == "RewardThresholdCurriculum":
             from .curriculum import RewardThresholdCurriculum
