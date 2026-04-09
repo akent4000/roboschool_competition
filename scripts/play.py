@@ -4,6 +4,7 @@ assert isaacgym
 import torch
 import numpy as np
 import cv2
+from pathlib import Path
 
 import glob
 import pickle as pkl
@@ -14,6 +15,9 @@ from aliengo_gym.envs.aliengo.aliengo_config import config_aliengo
 from aliengo_gym.envs.aliengo.velocity_tracking import VelocityTrackingEasyEnv
 
 from tqdm import tqdm
+
+DEFAULT_RUN_LABEL = "gait-conditioned-agility/aliengo-v0/train"
+
 
 def load_policy(logdir):
     body = torch.jit.load(logdir + '/checkpoints/body_latest.jit')
@@ -30,9 +34,16 @@ def load_policy(logdir):
     return policy
 
 
+def _resolve_logdir(label: str) -> str:
+    runs_root = Path(__file__).resolve().parents[1] / "runs"
+    candidates = sorted(path for path in (runs_root / label).glob("*") if path.is_dir())
+    if not candidates:
+        raise FileNotFoundError(f"No run directories found under {runs_root / label}")
+    return str(candidates[0])
+
+
 def load_env(label, headless=False):
-    dirs = glob.glob(f"../runs/{label}/*")
-    logdir = sorted(dirs)[0]
+    logdir = _resolve_logdir(label)
 
     with open(logdir + "/parameters.pkl", 'rb') as file:
         pkl_cfg = pkl.load(file)
@@ -110,7 +121,7 @@ def play_aliengo(headless=True):
     import glob
     import os
 
-    label = "gait-conditioned-agility/aliengo-v0/train"
+    label = DEFAULT_RUN_LABEL
 
     env, policy = load_env(label, headless=headless)
 
