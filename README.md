@@ -214,6 +214,54 @@ docker/ctl.sh ros2-exec
 
 Это означает, что контейнеры не взаимодействуют друг с другом как обычные ROS-ноды. Обмен реализован через мост и сетевые сокеты.
 
+## Локальный Isaac Gym И ROS Контейнер
+
+Если Isaac Gym удобнее запускать на хосте, а ROS 2 bridge оставить в контейнере, это уже совместимо с текущей схемой. `bridge_node.py` и `SimBridgeClient` общаются через `host network`, поэтому контейнеру не нужен контейнер симуляции рядом, ему нужен только доступ к портам `5005-5010` на хосте.
+
+### 1. Подготовить локальное окружение Isaac Gym
+
+В shell на хосте:
+
+```bash
+source scripts/use_local_isaacgym.sh /path/to/isaacgym
+```
+
+Если Isaac Gym установлен в `~/isaacgym` или `/opt/isaacgym`, путь можно не передавать:
+
+```bash
+source scripts/use_local_isaacgym.sh
+```
+
+### 2. Запустить Isaac Gym На Хосте
+
+Для Python-режима:
+
+```bash
+python scripts/controller.py --steps 15000 --seed 0
+```
+
+Для ROS-режима симуляции на хосте:
+
+```bash
+python ros2_isaac_bridge/sim_side/isaac_controller.py
+```
+
+### 3. Поднять Только ROS 2 Контейнер
+
+```bash
+docker/ctl.sh ros2-build
+docker/ctl.sh ros2-up
+```
+
+### 4. Запустить Bridge В ROS Контейнере
+
+```bash
+docker/ctl.sh ros2-exec
+bash /workspace/aliengo_competition/ros2_isaac_bridge/run_bridge_node.sh
+```
+
+В этом режиме `docker/ctl.sh up` не нужен: Isaac Gym работает на хосте, а контейнер `ros2-jazzy` подключается к нему через те же сокеты и порты, что и в полностью docker-варианте.
+
 ## Как устроен Python-вариант
 
 Python-вариант живёт в:
