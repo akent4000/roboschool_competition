@@ -119,8 +119,8 @@ def run(
     # Detection tuning
     _DETECT_EVERY = 5        # run YOLO every N steps (~10 Hz)
     _DETECT_CONF = 0.6      # base confidence threshold (YOLO pre-filter)
-    _CONFIRM_DIST_M = 1.0   # visit confirmed within this radius (m)
-    _CONFIRM_WAIT_S = 2.0    # seconds to stop near object for confirmation
+    _CONFIRM_DIST_M = 0.8   # visit confirmed within this radius (m)
+    _CONFIRM_WAIT_S = 2.1    # seconds to stop near object for confirmation
     _DEPTH_PATCH = 15        # half-size of depth sampling window (px)
 
     # Per-class confidence thresholds (override _DETECT_CONF for specific classes)
@@ -162,6 +162,7 @@ def run(
         visited_positions: list = []  # [(wx, wy)] — positions of visited objects
         sight_counts: dict = {}     # {class_id: (count, wx, wy)} — sighting accumulator
         passby_active: bool = False # True when using pass-by approach for current target
+        confirming_proximity: bool = False  # True when proximity (not YOLO) triggered confirmation
         search_rotation_active: bool = False
         motion_mode: Optional[str] = None
         queue_completed_logged: bool = False
@@ -422,7 +423,7 @@ def run(
                                     f" at ({sx:.2f}, {sy:.2f})"
                                     f" [estimated, {cnt} sightings]"
                                 )
-                            else:
+                            elif cnt <= 10 or cnt % 20 == 0:
                                 print(
                                     f"[Memory] Refined {_names.get(cls_id_det, '?')}"
                                     f" to ({sx:.2f}, {sy:.2f})"
@@ -445,14 +446,43 @@ def run(
                             queue_idx=_ds.queue_idx,
                         )
                     _ds.target_visible = False
-                    if _ds.confirming_since_t is None:
+                    if (_ds.confirming_since_t is not None and _yolo_ran_this_step
+                            and not _ds.confirming_proximity):
+                        # Fresh YOLO scan — target not detected → cancel confirmation.
+                        # Prevents confirming a phantom object when the robot has moved
+                        # and cached detections projected onto a wall.
+                        # (Do NOT cancel if proximity-mode confirmation is in progress.)
+                        logger.log_event(
+                            sim_t,
+                            "confirmation_cancelled",
+                            target_id=target_cls,
+                            reason="not_visible_in_fresh_scan",
+                        )
+                        print(
+                            "[Detector] Confirmation cancelled — target absent in fresh YOLO scan"
+                        )
+                        _ds.confirming_since_t = None
+                        _ds.target_world = None
+                        _ds.nav_active = False
+                    elif _ds.confirming_since_t is None:
                         # Not confirming and no detection → lose target
                         _ds.target_world = None
                         _ds.nav_active = False
-                    # If confirming, robot is stopped near object — keep timer running
+                    # If confirming and YOLO cache is stale — keep timer running
                     return None
 
                 _, uc, vc, _, _, _ = best
+
+                if not _yolo_ran_this_step:
+                    # Cached pixel coordinates are stale: the robot has moved since the
+                    # last YOLO run, so sampling depth at those pixels would hit whatever
+                    # is currently in that region (e.g. a wall), producing a wrong world
+                    # position and potentially triggering a false confirmation.
+                    # Keep nav_active so the robot continues toward the last known position,
+                    # but skip any world-position update or confirmation check this step.
+                    _ds.target_visible = True
+                    return None
+
                 d_m = _sample_depth_at(depth, uc, vc)
                 if d_m is None:
                     # Object visible but beyond depth range — estimate from bbox
@@ -509,6 +539,7 @@ def run(
                         confirmed_id = target_cls
                         _ds.queue_idx += 1
                         _ds.confirming_since_t = None
+                        _ds.confirming_proximity = False
                         _ds.visited_positions.append((wx, wy))
                         if confirmed_id in _ds.known_objects:
                             del _ds.known_objects[confirmed_id]
@@ -554,7 +585,8 @@ def run(
 
             # --- Proximity-based confirmation for known objects ---
             # When approaching from the side, camera may not see the object.
-            # If robot center is within radius of the known position, confirm.
+            # If robot center is within radius of the known position, start/continue
+            # a _CONFIRM_WAIT_S stop timer — same freeze requirement as YOLO path.
             if detected_object_id is None and _ds.queue_idx < len(object_queue):
                 _prox_cls = object_queue[_ds.queue_idx]
                 _prox_pos = _ds.known_objects.get(_prox_cls)
@@ -563,23 +595,41 @@ def run(
                     _prox_dist = _math.hypot(
                         _prox_pos[0] - _prox_rx, _prox_pos[1] - _prox_ry
                     )
+                    _prox_name = {0: "backpack", 1: "bottle", 2: "chair",
+                                  3: "cup", 4: "laptop"}.get(_prox_cls, "?")
                     if _prox_dist < _CONFIRM_DIST_M:
-                        detected_object_id = _prox_cls
-                        _ds.queue_idx += 1
+                        if _ds.confirming_since_t is None:
+                            # Start proximity-confirmation timer
+                            _ds.confirming_since_t = sim_t
+                            _ds.confirming_proximity = True
+                            print(
+                                f"[Detector] PROXIMITY in range ({_prox_dist:.2f}m), "
+                                f"stopping for {_CONFIRM_WAIT_S}s confirmation..."
+                            )
+                        elif _ds.confirming_proximity:
+                            _prox_elapsed = sim_t - _ds.confirming_since_t
+                            if _prox_elapsed >= _CONFIRM_WAIT_S:
+                                detected_object_id = _prox_cls
+                                _ds.queue_idx += 1
+                                _ds.confirming_since_t = None
+                                _ds.confirming_proximity = False
+                                _ds.visited_positions.append(_prox_pos)
+                                if _prox_cls in _ds.known_objects:
+                                    del _ds.known_objects[_prox_cls]
+                                _ds.target_world = None
+                                _ds.nav_active = False
+                                _ds.backup_until_t = sim_t + 0.3
+                                _ds.target_visible = False
+                                print(
+                                    f"[Detector] PROXIMITY CONFIRMED {_prox_name} "
+                                    f"at dist={_prox_dist:.2f}m "
+                                    f"({_ds.queue_idx}/{len(object_queue)})"
+                                )
+                    elif _ds.confirming_proximity:
+                        # Left the radius — cancel proximity confirmation
                         _ds.confirming_since_t = None
-                        _ds.visited_positions.append(_prox_pos)
-                        if _prox_cls in _ds.known_objects:
-                            del _ds.known_objects[_prox_cls]
-                        _ds.target_world = None
-                        _ds.nav_active = False
-                        _ds.backup_until_t = sim_t + 0.3
-                        _prox_name = {0: "backpack", 1: "bottle", 2: "chair",
-                                      3: "cup", 4: "laptop"}.get(_prox_cls, "?")
-                        print(
-                            f"[Detector] PROXIMITY CONFIRMED {_prox_name} "
-                            f"at dist={_prox_dist:.2f}m "
-                            f"({_ds.queue_idx}/{len(object_queue)})"
-                        )
+                        _ds.confirming_proximity = False
+                        print("[Detector] Proximity confirmation cancelled — left radius")
 
             if detected_object_id is not None:
                 log_found_object(detected_object_id)
@@ -597,6 +647,7 @@ def run(
             if local_t < control_dt * 2:
                 slam.reset_pose()
                 _ds.confirming_since_t = None
+                _ds.confirming_proximity = False
                 _ds.target_world = None
                 _ds.nav_active = False
 

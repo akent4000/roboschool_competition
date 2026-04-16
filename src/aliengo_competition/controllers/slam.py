@@ -633,7 +633,7 @@ class SlamController:
         self.cached_frontiers: List[Tuple[float, float]] = []
 
         # update intervals (in simulation steps)
-        self.MAP_INTERVAL: int = 5       # ~10 Hz
+        self.MAP_INTERVAL: int = 10      # ~5 Hz
         self.FRONTIER_INTERVAL: int = 50  # ~1 Hz
         self.PLAN_INTERVAL: int = 50      # ~1 Hz
         self.FRONTIER_CANDIDATES: int = 8
@@ -675,6 +675,13 @@ class SlamController:
         self._BLOCKED_REPLAN: int = 10     # force replan after this many blocked ticks (~0.2s)
         self._BLOCKED_HARD_TURN: int = 30  # aggressive 90° turn after ~0.6s stuck
 
+        # Sticky backing: after obstacle clears, keep backing for this many steps
+        # Prevents + - + - oscillation when robot wobbles near a wall at a shallow angle
+        self._step_index: int = 0
+        self._backing_until_step: int = 0
+        self._backing_turn_dir: float = 1.0
+        self._BACKING_STICKY_STEPS: int = 20  # ~0.4 s at 50 Hz
+
     # -- public API ----------------------------------------------------------
 
     def reset_pose(self) -> None:
@@ -688,11 +695,15 @@ class SlamController:
         self._last_plan = -999
         self._prev_wz = 0.0
         self._blocked_steps = 0
+        self._backing_until_step = 0
 
     def set_navigation_target(self, wx: float, wy: float) -> None:
         """Override exploration with a specific world-coordinate goal."""
+        if (self._explicit_target is None
+                or math.hypot(self._explicit_target[0] - wx,
+                              self._explicit_target[1] - wy) > 0.3):
+            self._last_plan = -999  # force replan only on significant target change
         self._explicit_target = (wx, wy)
-        self._last_plan = -999  # force replan
 
     def clear_navigation_target(self) -> None:
         """Resume frontier-based exploration."""
@@ -802,6 +813,7 @@ class SlamController:
             self._last_plan = step_index
 
         # 5. generate velocity command
+        self._step_index = step_index
         return self._navigate(rx, ry, rt, depth)
 
     # -- debug ---------------------------------------------------------------
@@ -852,6 +864,9 @@ class SlamController:
 
         if not front_clear:
             self._blocked_steps += 1
+            # Arm sticky backing: even after front clears, keep retreating
+            self._backing_until_step = self._step_index + self._BACKING_STICKY_STEPS
+            self._backing_turn_dir = turn_dir
 
             # Invalidate current path — it leads into the wall
             if self._blocked_steps >= self._BLOCKED_REPLAN:
@@ -873,6 +888,13 @@ class SlamController:
                 return -0.15, lat_vy, wz
         else:
             self._blocked_steps = 0
+            # Sticky: continue backing even though front just cleared.
+            # This prevents + - + - oscillation when the robot wobbles near
+            # a wall at a shallow angle (center depth flickers around OBS_STOP).
+            if self._step_index < self._backing_until_step:
+                wz = self._backing_turn_dir * 0.5
+                self._prev_wz = wz
+                return -0.10, 0.0, wz
 
         wp = self._pure_pursuit_target(rx, ry)
         if wp is None:
