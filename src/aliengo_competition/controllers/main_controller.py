@@ -356,11 +356,13 @@ def run(
                 depth = current_camera_data.get("depth") if current_camera_data else None
 
                 dets = _run_yolo(rgb, step_index)
+                _yolo_ran_this_step = (_ds.last_detect_step == step_index)
 
                 # Save world positions of ALL detected objects (not just target)
+                # Only runs when YOLO actually fired — not on cached results
                 rx, ry, rt = slam.odom.pose
                 visited_set = set(current_object_queue[:_ds.queue_idx])
-                for det in dets:
+                for det in (dets if _yolo_ran_this_step else []):
                     cls_id_det = det[0]
                     if cls_id_det in visited_set:
                         continue
