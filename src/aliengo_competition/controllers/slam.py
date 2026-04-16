@@ -642,9 +642,9 @@ class SlamController:
 
         # navigation tuning
         self.WP_REACH: float = 0.3       # waypoint reached radius (m)
-        self.MAX_VX: float = 0.55
+        self.MAX_VX: float = 0.65
         self.MIN_VX: float = 0.10
-        self.MAX_WZ: float = 0.8
+        self.MAX_WZ: float = 1.0
         self.TURN_THRESH: float = 0.4    # turn-in-place if angle error > this
         self.OBS_STOP: float = 0.55      # stop if obstacle closer than this (m)
         self.OBS_SLOW: float = 1.0       # slow down zone (m)
@@ -655,7 +655,7 @@ class SlamController:
         self.LOOKAHEAD: float = 0.8      # look-ahead distance on path (m)
 
         # Straight-line acceleration
-        self.BOOST_VX: float = 0.75                    # boosted speed on straights
+        self.BOOST_VX: float = 1.20                    # boosted speed on straights
         self.STRAIGHT_THRESH: float = math.radians(8.0)  # boost when heading error < this
 
         # Low-pass filter for angular velocity (reduces jitter)
@@ -680,7 +680,7 @@ class SlamController:
         self._step_index: int = 0
         self._backing_until_step: int = 0
         self._backing_turn_dir: float = 1.0
-        self._BACKING_STICKY_STEPS: int = 20  # ~0.4 s at 50 Hz
+        self._BACKING_STICKY_STEPS: int = 65  # ~1.2 s at 50 Hz
 
     # -- public API ----------------------------------------------------------
 
@@ -917,9 +917,14 @@ class SlamController:
 
         abs_err = abs(err)
 
+        # Near an obstacle: scale MIN_VX down so the robot can decelerate to 0
+        # before the backing phase kicks in (smooth stop, not abrupt jump).
+        # speed_scale < 0.3 ≈ closer than ~0.69 m; at OBS_STOP it reaches 0.
+        min_vx_eff = self.MIN_VX * min(speed_scale / 0.3, 1.0)
+
         if abs_err > self.TURN_THRESH:
             # large heading error — turn in place (crawl forward slightly)
-            vx = self.MIN_VX
+            vx = min_vx_eff
             wz_raw = max(min(err * 2.0, self.MAX_WZ), -self.MAX_WZ)
         else:
             # curvature-based speed: reduce vx proportionally to yaw error
@@ -929,7 +934,7 @@ class SlamController:
             speed = top_speed * speed_scale * curv_factor
             if dist < 0.5:
                 speed *= max(dist / 0.5, 0.25)
-            vx = max(speed, self.MIN_VX)
+            vx = max(speed, min_vx_eff)
             wz_raw = max(min(err * 1.5, self.MAX_WZ), -self.MAX_WZ)
 
         # Low-pass filter on angular velocity
@@ -1011,8 +1016,8 @@ class SlamController:
             return False, turn, 0.0, lat_vy
 
         if center_dist < self.OBS_SLOW:
-            # slow-down zone — scale speed linearly
+            # slow-down zone — scale speed linearly to 0 at OBS_STOP
             scale = (center_dist - self.OBS_STOP) / (self.OBS_SLOW - self.OBS_STOP)
-            return True, 0.0, max(scale, 0.15), lat_vy
+            return True, 0.0, max(scale, 0.0), lat_vy
 
         return True, 0.0, 1.0, lat_vy

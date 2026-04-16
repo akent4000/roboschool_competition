@@ -1,3 +1,5 @@
+# 10 Команда
+
 # Aliengo Competition
 
 Репозиторий для соревнования по управлению Aliengo в Isaac Gym.

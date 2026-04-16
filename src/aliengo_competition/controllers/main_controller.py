@@ -77,7 +77,7 @@ def run(
     from aliengo_competition.controllers.slam import SlamController
     from aliengo_competition.controllers.visualizer import DashboardVisualizer
 
-    warmup_s = 5.0  # robot drops on spawn and needs time to stabilize
+    warmup_s = 3.5  # robot drops on spawn and needs time to stabilize
     slam = SlamController(control_dt=control_dt)
     dashboard = DashboardVisualizer(
         enabled=render_camera,
@@ -130,6 +130,9 @@ def run(
     # How many times an object must be seen before saving to known_objects
     _MEMORY_SIGHT_THRESH = 3
 
+    # How many consecutive YOLO detections before calling log_found_object
+    _STABLE_DETECT_STEPS = 10
+
     # Post-confirmation: back up for this many seconds after visiting an object
     _BACKUP_DURATION_S = 1.5
     _BACKUP_VX = -0.25
@@ -161,6 +164,8 @@ def run(
         known_objects: dict = {}    # {class_id: (wx, wy)} — remembered positions
         visited_positions: list = []  # [(wx, wy)] — positions of visited objects
         sight_counts: dict = {}     # {class_id: (count, wx, wy)} — sighting accumulator
+        yolo_stable_counts: dict = {}  # {class_id: consecutive YOLO detections}
+        yolo_logged: set = set()       # class_ids already logged via stable detection
         passby_active: bool = False # True when using pass-by approach for current target
         confirming_proximity: bool = False  # True when proximity (not YOLO) triggered confirmation
         search_rotation_active: bool = False
@@ -359,6 +364,31 @@ def run(
                 dets = _run_yolo(rgb, step_index)
                 _yolo_ran_this_step = (_ds.last_detect_step == step_index)
 
+                # Update consecutive YOLO detection counters
+                if _yolo_ran_this_step:
+                    _seen_classes = set(d[0] for d in dets)
+                    for _sc in _seen_classes:
+                        _ds.yolo_stable_counts[_sc] = _ds.yolo_stable_counts.get(_sc, 0) + 1
+                    for _sc in list(_ds.yolo_stable_counts):
+                        if _sc not in _seen_classes:
+                            _ds.yolo_stable_counts[_sc] = 0
+                    # Log objects that just crossed the stable threshold
+                    _names_log = {0: "backpack", 1: "bottle", 2: "chair",
+                                  3: "cup", 4: "laptop"}
+                    visited_set_log = set(current_object_queue[:_ds.queue_idx])
+                    for _sc in _seen_classes:
+                        if (_sc in current_object_queue
+                                and _sc not in visited_set_log
+                                and _sc not in _ds.yolo_logged
+                                and _ds.yolo_stable_counts[_sc] >= _STABLE_DETECT_STEPS):
+                            log_found_object(_sc)
+                            _ds.yolo_logged.add(_sc)
+                            print(
+                                f"[LOG] Object {_sc} ({_names_log.get(_sc, '?')}) "
+                                f"detected (stable {_ds.yolo_stable_counts[_sc]} steps) "
+                                f"at t={sim_t:.2f}s"
+                            )
+
                 # Save world positions of ALL detected objects (not just target)
                 # Only runs when YOLO actually fired — not on cached results
                 rx, ry, rt = slam.odom.pose
@@ -382,6 +412,23 @@ def run(
                                 f" at ({wx_det:.2f}, {wy_det:.2f}) [depth]"
                             )
                         _ds.known_objects[cls_id_det] = (wx_det, wy_det)
+                        # Evict stale wrong-class entries recorded at the same
+                        # physical position (depth-confirmed ⇒ accurate position).
+                        for _stale_cls in list(_ds.known_objects.keys()):
+                            if _stale_cls == cls_id_det:
+                                continue
+                            _sx, _sy = _ds.known_objects[_stale_cls]
+                            if _math.hypot(_sx - wx_det, _sy - wy_det) < 1.5:
+                                del _ds.known_objects[_stale_cls]
+                                _ds.sight_counts.pop(_stale_cls, None)
+                                print(
+                                    f"[Memory] Evicted stale"
+                                    f" {_names_d.get(_stale_cls, '?')}"
+                                    f" → reclassified as"
+                                    f" {_names_d.get(cls_id_det, '?')}"
+                                    f" at ({wx_det:.2f}, {wy_det:.2f})"
+                                )
+                                break
                         continue
                     else:
                         # Beyond depth range — estimate distance from bbox size
