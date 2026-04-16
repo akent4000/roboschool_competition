@@ -535,11 +535,17 @@ class SlamController:
         self.MIN_VX: float = 0.10
         self.MAX_WZ: float = 0.8
         self.TURN_THRESH: float = 0.4    # turn-in-place if angle error > this
-        self.OBS_STOP: float = 0.45      # stop if obstacle closer than this (m)
-        self.OBS_SLOW: float = 0.80      # slow down zone (m)
+        self.OBS_STOP: float = 0.55      # stop if obstacle closer than this (m)
+        self.OBS_SLOW: float = 1.0       # slow down zone (m)
+        self.INFLATE_R: int = 10         # path inflation radius (cells = 0.5m)
+        self.LAT_AVOID_THRESH: float = 0.6  # lateral avoidance threshold (m)
 
         # Pure Pursuit
         self.LOOKAHEAD: float = 0.8      # look-ahead distance on path (m)
+
+        # Straight-line acceleration
+        self.BOOST_VX: float = 0.75                    # boosted speed on straights
+        self.STRAIGHT_THRESH: float = math.radians(8.0)  # boost when heading error < this
 
         # Low-pass filter for angular velocity (reduces jitter)
         self._prev_wz: float = 0.0
@@ -547,6 +553,16 @@ class SlamController:
 
         # Dead zone: skip yaw corrections smaller than this
         self.YAW_DEADZONE: float = math.radians(4.0)  # ~4°
+
+        # Anti-stuck: when no frontier is found, pick a random direction
+        self._no_target_since: int = 0     # step when target was last None
+        self._random_heading: Optional[float] = None  # fallback heading
+        self._STUCK_STEPS: int = 100       # ~2s without target → random walk
+
+        # Wall-stuck detection: consecutive steps where front is blocked
+        self._blocked_steps: int = 0
+        self._BLOCKED_REPLAN: int = 10     # force replan after this many blocked ticks (~0.2s)
+        self._BLOCKED_HARD_TURN: int = 30  # aggressive 90° turn after ~0.6s stuck
 
     # -- public API ----------------------------------------------------------
 
@@ -560,6 +576,7 @@ class SlamController:
         self._last_frontier = -999
         self._last_plan = -999
         self._prev_wz = 0.0
+        self._blocked_steps = 0
 
     def set_navigation_target(self, wx: float, wy: float) -> None:
         """Override exploration with a specific world-coordinate goal."""
@@ -569,6 +586,13 @@ class SlamController:
     def clear_navigation_target(self) -> None:
         """Resume frontier-based exploration."""
         self._explicit_target = None
+
+    def force_replan(self) -> None:
+        """Force immediate frontier search and path replan on next update()."""
+        self._last_frontier = -999
+        self._last_plan = -999
+        self.path = None
+        self.target = None
 
     def set_exclusion_zones(self, positions: List[Tuple[float, float]]) -> None:
         """Mark visited object positions; frontiers within 1.5 m are deprioritized."""
@@ -599,6 +623,8 @@ class SlamController:
         # 3. choose target
         if self._explicit_target is not None:
             self.target = self._explicit_target
+            self._no_target_since = step_index
+            self._random_heading = None
         elif (step_index - self._last_frontier) >= self.FRONTIER_INTERVAL:
             targets = self.explorer.find_targets(rx, ry, n=5)
             # Filter out frontiers within 1.5 m of visited objects
@@ -610,13 +636,31 @@ class SlamController:
                 ]
                 targets = filtered if filtered else targets
             self.cached_frontiers = targets
-            self.target = targets[0] if targets else None
+            if targets:
+                self.target = targets[0]
+                self._no_target_since = step_index
+                self._random_heading = None
+            else:
+                # No frontier found — anti-stuck: pick a random direction
+                # and create a synthetic target 3m away
+                if (self._random_heading is None
+                        or step_index - self._no_target_since > self._STUCK_STEPS):
+                    import random as _rnd
+                    self._random_heading = _rnd.uniform(-math.pi, math.pi)
+                    self._no_target_since = step_index
+                    print(f"[SLAM] No frontiers — random walk heading "
+                          f"{math.degrees(self._random_heading):.0f}°")
+                _rw_dist = 3.0
+                self.target = (
+                    rx + _rw_dist * math.cos(self._random_heading),
+                    ry + _rw_dist * math.sin(self._random_heading),
+                )
             self._last_frontier = step_index
             self._last_plan = -999  # force replan on new target
 
         # 4. plan path (throttled)
         if self.target is not None and (step_index - self._last_plan) >= self.PLAN_INTERVAL:
-            p = self.planner.plan(rx, ry, self.target[0], self.target[1])
+            p = self.planner.plan(rx, ry, self.target[0], self.target[1], inflate_r=self.INFLATE_R)
             if p and len(p) > 1:
                 self.path = p
                 self.path_idx = 1  # skip the start cell
@@ -671,19 +715,38 @@ class SlamController:
         - yaw dead zone (skip tiny corrections)
         - low-pass filter on angular velocity (remove jitter)
         """
-        front_clear, turn_dir, speed_scale = self._obstacle_check(depth)
+        front_clear, turn_dir, speed_scale, lat_vy = self._obstacle_check(depth)
 
         if not front_clear:
-            # obstacle too close — back up while turning away
-            wz = turn_dir * 0.6
-            self._prev_wz = wz
-            return -0.15, 0.0, wz
+            self._blocked_steps += 1
+
+            # Invalidate current path — it leads into the wall
+            if self._blocked_steps >= self._BLOCKED_REPLAN:
+                if self.path is not None:
+                    self.path = None
+                    self._last_plan = -999  # force replan next cycle
+                # Also clear random walk heading so we pick a new direction
+                self._random_heading = None
+
+            # Progressive turn: the longer we're stuck, the harder we turn
+            if self._blocked_steps >= self._BLOCKED_HARD_TURN:
+                # Aggressive: fast turn + moderate backup
+                wz = turn_dir * self.MAX_WZ
+                self._prev_wz = wz
+                return -0.20, lat_vy, wz
+            else:
+                wz = turn_dir * 0.6
+                self._prev_wz = wz
+                return -0.15, lat_vy, wz
+        else:
+            self._blocked_steps = 0
 
         wp = self._pure_pursuit_target(rx, ry)
         if wp is None:
-            # no target — spin slowly to discover space
-            self._prev_wz = 0.5
-            return 0.0, 0.0, 0.5
+            # no target — drive forward while turning to discover new space
+            # (pure spin keeps the robot stuck in the same spot)
+            self._prev_wz = 0.6
+            return 0.25, 0.0, 0.6
 
         dx = wp[0] - rx
         dy = wp[1] - ry
@@ -706,7 +769,9 @@ class SlamController:
         else:
             # curvature-based speed: reduce vx proportionally to yaw error
             curv_factor = 1.0 - 0.6 * (abs_err / self.TURN_THRESH) if self.TURN_THRESH > 0 else 1.0
-            speed = self.MAX_VX * speed_scale * curv_factor
+            # Boost speed on straight segments (small heading error)
+            top_speed = self.BOOST_VX if abs_err < self.STRAIGHT_THRESH else self.MAX_VX
+            speed = top_speed * speed_scale * curv_factor
             if dist < 0.5:
                 speed *= max(dist / 0.5, 0.25)
             vx = max(speed, self.MIN_VX)
@@ -716,7 +781,7 @@ class SlamController:
         wz = self.WZ_ALPHA * wz_raw + (1.0 - self.WZ_ALPHA) * self._prev_wz
         self._prev_wz = wz
 
-        return vx, 0.0, wz
+        return vx, lat_vy, wz
 
     def _pure_pursuit_target(
         self, rx: float, ry: float
@@ -753,15 +818,16 @@ class SlamController:
 
     def _obstacle_check(
         self, depth: Optional[np.ndarray]
-    ) -> Tuple[bool, float, float]:
+    ) -> Tuple[bool, float, float, float]:
         """Check the depth image for close obstacles.
 
-        Returns ``(front_is_clear, turn_direction, speed_scale)``.
+        Returns ``(front_is_clear, turn_direction, speed_scale, lateral_vy)``.
         ``turn_direction`` is +1 (turn left) or -1 (turn right).
         ``speed_scale`` is 0.0–1.0, used to slow down near obstacles.
+        ``lateral_vy`` is a lateral dodge velocity (positive = left).
         """
         if depth is None:
-            return True, 0.0, 1.0
+            return True, 0.0, 1.0, 0.0
 
         H, W = depth.shape
         row_lo, row_hi = H // 3, 2 * H // 3
@@ -772,18 +838,26 @@ class SlamController:
                 return 99.0
             return float(np.percentile(v, 10))
 
+        left_dist = safe_min(depth[row_lo:row_hi, : W // 3])
         center_dist = safe_min(depth[row_lo:row_hi, W // 3: 2 * W // 3])
+        right_dist = safe_min(depth[row_lo:row_hi, 2 * W // 3:])
+
+        # Lateral avoidance: push away from nearby side obstacles
+        lat_vy = 0.0
+        lat_thresh = self.LAT_AVOID_THRESH
+        if left_dist < lat_thresh and right_dist >= lat_thresh:
+            lat_vy = -0.15 * (1.0 - left_dist / lat_thresh)   # dodge right
+        elif right_dist < lat_thresh and left_dist >= lat_thresh:
+            lat_vy = 0.15 * (1.0 - right_dist / lat_thresh)   # dodge left
 
         if center_dist <= self.OBS_STOP:
             # blocked — decide which way to turn
-            left_dist = safe_min(depth[row_lo:row_hi, : W // 3])
-            right_dist = safe_min(depth[row_lo:row_hi, 2 * W // 3:])
             turn = 1.0 if left_dist > right_dist else -1.0
-            return False, turn, 0.0
+            return False, turn, 0.0, lat_vy
 
         if center_dist < self.OBS_SLOW:
             # slow-down zone — scale speed linearly
             scale = (center_dist - self.OBS_STOP) / (self.OBS_SLOW - self.OBS_STOP)
-            return True, 0.0, max(scale, 0.15)
+            return True, 0.0, max(scale, 0.15), lat_vy
 
-        return True, 0.0, 1.0
+        return True, 0.0, 1.0, lat_vy

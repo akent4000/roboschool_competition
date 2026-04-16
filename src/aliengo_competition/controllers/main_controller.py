@@ -66,7 +66,7 @@ def run(
     from aliengo_competition.controllers.slam import SlamController
     from aliengo_competition.controllers.visualizer import DashboardVisualizer
 
-    warmup_s = 0.4
+    warmup_s = 5.0  # robot drops on spawn and needs time to stabilize
     slam = SlamController(control_dt=control_dt)
     dashboard = DashboardVisualizer(
         enabled=render_camera,
@@ -123,6 +123,19 @@ def run(
     _BACKUP_DURATION_S = 1.5
     _BACKUP_VX = -0.25
 
+    # Pass-by approach: offset from target to allow smooth transition to next target
+    _PASSBY_OFFSET = 0.4  # lateral offset (m) from target when next target is known
+
+    # Approximate real-world heights (m) per object class — for distance
+    # estimation from bounding box when depth sensor is out of range (>4 m)
+    _OBJ_HEIGHT_M = {
+        0: 0.5,   # backpack
+        1: 0.5,   # bottle
+        2: 0.5,   # chair
+        3: 0.5,   # cup
+        4: 0.5,   # laptop
+    }
+
     # Mutable state that persists across loop iterations
     class _DS:
         last_detect_step = -999
@@ -135,6 +148,7 @@ def run(
         known_objects = {}    # {class_id: (wx, wy)} — remembered positions
         visited_positions = []  # [(wx, wy)] — positions of visited objects
         sight_counts = {}     # {class_id: (count, wx, wy)} — sighting accumulator
+        passby_active = False # True when using pass-by approach for current target
     _ds = _DS()
 
     def _run_yolo(rgb, step_idx):
@@ -197,6 +211,54 @@ def run(
         c, s = _math.cos(ot), _math.sin(ot)
         return (ox + x_r * c - y_r * s,
                 oy + x_r * s + y_r * c)
+
+    def _estimate_dist_from_bbox(cls_id, box_h):
+        """Estimate distance from bounding-box height (pinhole camera model).
+
+        Used when the object is beyond the depth sensor range (~4 m).
+        """
+        real_h = _OBJ_HEIGHT_M.get(cls_id, 0.35)
+        if box_h < 5:
+            return 10.0  # tiny detection — very far
+        dist = (real_h * _RGB_FX) / box_h
+        return max(4.5, min(dist, 12.0))
+
+    def _get_next_target_pos():
+        """Return world position of the next target (after current), if known."""
+        next_idx = _ds.queue_idx + 1
+        if next_idx >= len(object_queue):
+            return None
+        next_cls = object_queue[next_idx]
+        return _ds.known_objects.get(next_cls)
+
+    def _compute_approach_point(target_pos, next_pos, robot_pos):
+        """Compute a pass-by point alongside the target, offset toward the next target.
+
+        Instead of approaching head-on, the robot stops to the side of the target
+        on the side that gives a shorter path to the next target.
+        """
+        tx, ty = target_pos
+        nx, ny = next_pos
+        rx, ry = robot_pos
+
+        dx = nx - tx
+        dy = ny - ty
+        d = _math.hypot(dx, dy)
+        if d < 0.1:
+            return target_pos
+
+        ux, uy = dx / d, dy / d
+        perp1 = (-uy, ux)
+        perp2 = (uy, -ux)
+
+        offset = _PASSBY_OFFSET
+        ap1 = (tx + perp1[0] * offset, ty + perp1[1] * offset)
+        ap2 = (tx + perp2[0] * offset, ty + perp2[1] * offset)
+
+        # Pick the side with shorter total path: robot → approach → next
+        t1 = _math.hypot(ap1[0] - rx, ap1[1] - ry) + _math.hypot(ap1[0] - nx, ap1[1] - ny)
+        t2 = _math.hypot(ap2[0] - rx, ap2[1] - ry) + _math.hypot(ap2[0] - nx, ap2[1] - ny)
+        return ap1 if t1 < t2 else ap2
     # ================== USER PARAMETERS END ==================
 
     segment_start_t = 0.0
@@ -278,12 +340,23 @@ def run(
                         wx_det, wy_det = _pixel_to_world(
                             uc_det, d_det, rx, ry, rt
                         )
+                        # Depth gives accurate position — save/refine immediately
+                        _names_d = {0: "backpack", 1: "bottle", 2: "chair",
+                                    3: "cup", 4: "laptop"}
+                        if cls_id_det not in _ds.known_objects:
+                            print(
+                                f"[Memory] Saved {_names_d.get(cls_id_det, '?')}"
+                                f" at ({wx_det:.2f}, {wy_det:.2f}) [depth]"
+                            )
+                        _ds.known_objects[cls_id_det] = (wx_det, wy_det)
+                        continue
                     else:
-                        # Beyond depth range — estimate position from bearing
+                        # Beyond depth range — estimate distance from bbox size
                         _bearing_det = _math.atan2(_RGB_CX - uc_det, _RGB_FX)
                         _ga_det = rt + _bearing_det
-                        wx_det = rx + 5.0 * _math.cos(_ga_det)
-                        wy_det = ry + 5.0 * _math.sin(_ga_det)
+                        _est_dist = _estimate_dist_from_bbox(cls_id_det, det[5])
+                        wx_det = rx + _est_dist * _math.cos(_ga_det)
+                        wy_det = ry + _est_dist * _math.sin(_ga_det)
                         too_close = any(
                             _math.hypot(wx_det - vpx, wy_det - vpy) < 1.5
                             for vpx, vpy in _ds.visited_positions
@@ -295,7 +368,7 @@ def run(
                         prev = _ds.sight_counts.get(cls_id_det)
                         if prev is not None:
                             cnt, px, py = prev
-                            if _math.hypot(wx_det - px, wy_det - py) < 1.0:
+                            if _math.hypot(wx_det - px, wy_det - py) < 2.0:
                                 cnt += 1
                                 # running average of position
                                 avg_x = (px * (cnt - 1) + wx_det) / cnt
@@ -315,7 +388,13 @@ def run(
                                 print(
                                     f"[Memory] Saved {_names.get(cls_id_det, '?')}"
                                     f" at ({sx:.2f}, {sy:.2f})"
-                                    f" after {cnt} sightings"
+                                    f" [estimated, {cnt} sightings]"
+                                )
+                            else:
+                                print(
+                                    f"[Memory] Refined {_names.get(cls_id_det, '?')}"
+                                    f" to ({sx:.2f}, {sy:.2f})"
+                                    f" [{cnt} sightings]"
                                 )
                             _ds.known_objects[cls_id_det] = (sx, sy)
 
@@ -336,12 +415,12 @@ def run(
                 _, uc, vc, _, _, _ = best
                 d_m = _sample_depth_at(depth, uc, vc)
                 if d_m is None:
-                    # Object visible but beyond depth range — navigate by bearing
+                    # Object visible but beyond depth range — estimate from bbox
                     bearing = _math.atan2(_RGB_CX - uc, _RGB_FX)
-                    _FAR_ASSUMED_DIST = 5.0
+                    _est_d = _estimate_dist_from_bbox(target_cls, best[5])
                     ga = rt + bearing
-                    wx = rx + _FAR_ASSUMED_DIST * _math.cos(ga)
-                    wy = ry + _FAR_ASSUMED_DIST * _math.sin(ga)
+                    wx = rx + _est_d * _math.cos(ga)
+                    wy = ry + _est_d * _math.sin(ga)
                     _ds.target_world = (wx, wy)
                     _ds.nav_active = True
                     _ds.confirming_since_t = None
@@ -370,7 +449,7 @@ def run(
                             del _ds.known_objects[confirmed_id]
                         _ds.target_world = None
                         _ds.nav_active = False
-                        _ds.backup_until_t = sim_t + _BACKUP_DURATION_S
+                        _ds.backup_until_t = sim_t + (0.3 if _ds.passby_active else _BACKUP_DURATION_S)
                         print(
                             f"[Detector] CONFIRMED object {confirmed_id} "
                             f"({_ds.queue_idx}/{len(current_object_queue)})"
@@ -393,6 +472,8 @@ def run(
                              3: "cup", 4: "laptop"}.get(detected_object_id, "?")
                 print(f"[LOG] Object {detected_object_id} ({_obj_name}) "
                       f"visited at t={sim_t:.2f}s")
+                # Force SLAM to immediately search for new frontiers
+                slam.force_replan()
 
             # --- SLAM-навигация ---
             local_t = max(sim_t - segment_start_t, 0.0)
@@ -408,14 +489,29 @@ def run(
             slam.set_exclusion_zones(_ds.visited_positions)
 
             # Direct SLAM toward detected object, known object, or explore frontiers
+            # Two-object planning: offset approach point when next target is known
+            _nav_pos = None
             if _ds.nav_active and _ds.target_world is not None:
-                slam.set_navigation_target(*_ds.target_world)
+                _nav_pos = _ds.target_world
             elif (_ds.queue_idx < len(object_queue)
                   and object_queue[_ds.queue_idx] in _ds.known_objects):
-                known_pos = _ds.known_objects[object_queue[_ds.queue_idx]]
-                slam.set_navigation_target(*known_pos)
+                _nav_pos = _ds.known_objects[object_queue[_ds.queue_idx]]
+
+            if _nav_pos is not None:
+                _next_pos = _get_next_target_pos()
+                if _next_pos is not None:
+                    _prx, _pry, _ = slam.odom.pose
+                    _approach = _compute_approach_point(
+                        _nav_pos, _next_pos, (_prx, _pry)
+                    )
+                    slam.set_navigation_target(*_approach)
+                    _ds.passby_active = True
+                else:
+                    slam.set_navigation_target(*_nav_pos)
+                    _ds.passby_active = False
             else:
                 slam.clear_navigation_target()
+                _ds.passby_active = False
 
             # Always feed sensor data to SLAM (builds map even during warmup)
             vx_cmd, vy_cmd, vw_cmd = slam.update(step_index, state, camera_data)
