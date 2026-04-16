@@ -1626,7 +1626,6 @@ class LeggedRobot(BaseTask):
         self.front_camera_enabled = bool(getattr(self.cfg.env, "front_camera_enabled", False))
         self.front_camera_color_handles = []
         self.front_camera_depth_handles = []
-        self.object_actor_handles = []  # per-env list of lists
         self.front_camera_color_props = None
         self.front_camera_depth_props = None
         self.front_camera_attach_body_name = str(getattr(self.cfg.env, "front_camera_attach_body_name", "trunk"))
@@ -1829,7 +1828,6 @@ class LeggedRobot(BaseTask):
             self.envs.append(env_handle)
             self.actor_handles.append(anymal_handle)
 
-            env_object_handles = []
             for b in range(num_boxes):
                 x, y = x_boxes[b], y_boxes[b]
 
@@ -1848,16 +1846,8 @@ class LeggedRobot(BaseTask):
                     0,
                     0
                 )
-                env_object_handles.append(box_handle)
 
-                # Assign unique segmentation ID so IMAGE_SEGMENTATION can
-                # distinguish each object.  IDs 1..5 (0 = background/robot).
-                seg_id = b + 1
-                num_bodies = self.gym.get_actor_rigid_body_count(env_handle, box_handle)
-                for body_idx in range(num_bodies):
-                    self.gym.set_rigid_body_segmentation_id(env_handle, box_handle, body_idx, seg_id)
-
-            self.object_actor_handles.append(env_object_handles)
+                pass
 
         self.feet_indices = torch.zeros(len(feet_names), dtype=torch.long, device=self.device, requires_grad=False)
         for i in range(len(feet_names)):
@@ -1930,18 +1920,9 @@ class LeggedRobot(BaseTask):
         depth = -depth.reshape((self.front_camera_depth_props.height, self.front_camera_depth_props.width))
         depth = np.maximum(depth, 0.0)
 
-        # Segmentation buffer from the colour camera (same viewpoint).
-        # Each pixel contains the segmentation_id assigned to the rendered
-        # body (0 = background/robot, 1..5 = object classes).
-        seg = self.gym.get_camera_image(
-            self.sim, self.envs[env_id], self.front_camera_color_handles[env_id], gymapi.IMAGE_SEGMENTATION
-        )
-        seg = seg.reshape((self.front_camera_color_props.height, self.front_camera_color_props.width))
-
         return {
             "image": color.copy(),
             "depth": depth.copy(),
-            "segmentation": seg.copy(),
         }
 
     def _render_headless(self):
