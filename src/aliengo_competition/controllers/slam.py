@@ -239,7 +239,11 @@ class FrontierExplorer:
     def find_targets(
         self, rx: float, ry: float, n: int = 5
     ) -> List[Tuple[float, float]]:
-        """Return up to *n* frontier cluster centroids, scored by distance & size."""
+        """Return up to *n* frontier targets, scored by unknown-space density.
+
+        Targets are pushed beyond the frontier centroid into unknown space
+        to encourage deeper exploration of unvisited areas.
+        """
         g = self.grid
         free = g.grid < g.FREE_THRESH
         unknown = (g.grid >= g.FREE_THRESH) & (g.grid <= g.OCC_THRESH)
@@ -260,7 +264,9 @@ class FrontierExplorer:
 
         clusters = self._cluster(fx, fy)
 
-        rgx, rgy = g.w2g(rx, ry)
+        _UNKNOWN_RADIUS = 40   # cells (~2 m at 0.05 resolution)
+        _EXTEND_M = 1.5        # push target beyond frontier into unknown
+
         scored = []  # type: List[Tuple[float, float, float]]
         for cl in clusters:
             if len(cl) < self.min_size:
@@ -268,9 +274,29 @@ class FrontierExplorer:
             mean_gx = sum(c[0] for c in cl) / len(cl)
             mean_gy = sum(c[1] for c in cl) / len(cl)
             wx, wy = g.g2w(int(mean_gx), int(mean_gy))
-            dist = math.hypot(mean_gx - rgx, mean_gy - rgy) * g.resolution
-            # prefer closer, larger frontiers
-            score = dist - 0.3 * math.sqrt(len(cl)) * g.resolution
+            dist = math.hypot(wx - rx, wy - ry)
+
+            # Count unknown cells in a box around the frontier centroid
+            cx, cy = int(mean_gx), int(mean_gy)
+            r = _UNKNOWN_RADIUS
+            x0 = max(0, cx - r)
+            x1 = min(g.w, cx + r + 1)
+            y0 = max(0, cy - r)
+            y1 = min(g.h, cy + r + 1)
+            box_area = max((x1 - x0) * (y1 - y0), 1)
+            unknown_frac = float(np.sum(unknown[y0:y1, x0:x1])) / box_area
+
+            # Push the target deeper into unexplored space
+            if dist > 0.1:
+                dx, dy = (wx - rx) / dist, (wy - ry) / dist
+                wx += dx * _EXTEND_M
+                wy += dy * _EXTEND_M
+
+            # Score: strongly prefer frontiers near large unknown regions,
+            # mildly penalize distance, reward larger clusters
+            score = (-unknown_frac * 10.0
+                     - 0.3 * math.sqrt(len(cl)) * g.resolution
+                     + dist * 0.3)
             scored.append((wx, wy, score))
 
         scored.sort(key=lambda t: t[2])

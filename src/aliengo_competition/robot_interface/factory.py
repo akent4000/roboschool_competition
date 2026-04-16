@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from aliengo_competition.robot_interface.sim import SimAliengoRobot
-from scripts.play import DEFAULT_RUN_LABEL, load_env
+from scripts.play_FOR_COLLECT_DATASET import DEFAULT_RUN_LABEL, load_env
 
 DEFAULT_CAMERA_DEPTH_MAX_M = 4.0
 

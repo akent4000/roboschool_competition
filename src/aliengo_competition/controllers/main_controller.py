@@ -107,8 +107,8 @@ def run(
 
     # Detection tuning
     _DETECT_EVERY = 5        # run YOLO every N steps (~10 Hz)
-    _DETECT_CONF = 0.45      # base confidence threshold (YOLO pre-filter)
-    _CONFIRM_DIST_M = 0.70   # visit confirmed within this radius (m)
+    _DETECT_CONF = 0.6      # base confidence threshold (YOLO pre-filter)
+    _CONFIRM_DIST_M = 1.0   # visit confirmed within this radius (m)
     _CONFIRM_WAIT_S = 2.0    # seconds to stop near object for confirmation
     _DEPTH_PATCH = 15        # half-size of depth sampling window (px)
 
@@ -466,6 +466,36 @@ def run(
                 camera_data,
                 object_queue,
             )
+
+            # --- Proximity-based confirmation for known objects ---
+            # When approaching from the side, camera may not see the object.
+            # If robot center is within radius of the known position, confirm.
+            if detected_object_id is None and _ds.queue_idx < len(object_queue):
+                _prox_cls = object_queue[_ds.queue_idx]
+                _prox_pos = _ds.known_objects.get(_prox_cls)
+                if _prox_pos is not None:
+                    _prox_rx, _prox_ry, _ = slam.odom.pose
+                    _prox_dist = _math.hypot(
+                        _prox_pos[0] - _prox_rx, _prox_pos[1] - _prox_ry
+                    )
+                    if _prox_dist < _CONFIRM_DIST_M:
+                        detected_object_id = _prox_cls
+                        _ds.queue_idx += 1
+                        _ds.confirming_since_t = None
+                        _ds.visited_positions.append(_prox_pos)
+                        if _prox_cls in _ds.known_objects:
+                            del _ds.known_objects[_prox_cls]
+                        _ds.target_world = None
+                        _ds.nav_active = False
+                        _ds.backup_until_t = sim_t + 0.3
+                        _prox_name = {0: "backpack", 1: "bottle", 2: "chair",
+                                      3: "cup", 4: "laptop"}.get(_prox_cls, "?")
+                        print(
+                            f"[Detector] PROXIMITY CONFIRMED {_prox_name} "
+                            f"at dist={_prox_dist:.2f}m "
+                            f"({_ds.queue_idx}/{len(object_queue)})"
+                        )
+
             if detected_object_id is not None:
                 log_found_object(detected_object_id)
                 _obj_name = {0: "backpack", 1: "bottle", 2: "chair",

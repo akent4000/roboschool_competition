@@ -53,7 +53,7 @@ import numpy as np
 import torch
 from isaacgym import gymtorch
 
-from scripts.play import load_env
+from scripts.play_FOR_COLLECT_DATASET import load_env
 from aliengo_competition.robot_interface.sim import SimAliengoRobot
 
 # ── Object meta ──────────────────────────────────────────────────────

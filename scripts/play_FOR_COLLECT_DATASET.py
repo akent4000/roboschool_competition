@@ -38,6 +38,17 @@ def load_policy(logdir):
 
 
 def load_env(label, headless=False, seed=0):
+    # Reload the config module so Cfg starts fresh (previous calls mutate it globally)
+    import importlib
+    import aliengo_gym.envs.base.legged_robot_config as _cfg_mod
+    importlib.reload(_cfg_mod)
+    global Cfg
+    Cfg = _cfg_mod.Cfg
+
+    # Re-apply aliengo defaults on the fresh Cfg
+    from aliengo_gym.envs.aliengo.aliengo_config import config_aliengo
+    config_aliengo(Cfg)
+
     dirs = glob.glob(str(RUNS_DIR / label / "*"))
     logdir = sorted(dirs)[0]
 
