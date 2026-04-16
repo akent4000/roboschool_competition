@@ -107,10 +107,17 @@ def run(
 
     # Detection tuning
     _DETECT_EVERY = 5        # run YOLO every N steps (~10 Hz)
-    _DETECT_CONF = 0.45      # confidence threshold
-    _CONFIRM_DIST_M = 0.55   # visit confirmed within this radius (m)
-    _CONFIRM_FRAMES = 3      # consecutive close detections needed
+    _DETECT_CONF = 0.45      # base confidence threshold (YOLO pre-filter)
+    _CONFIRM_DIST_M = 0.70   # visit confirmed within this radius (m)
+    _CONFIRM_WAIT_S = 2.0    # seconds to stop near object for confirmation
     _DEPTH_PATCH = 15        # half-size of depth sampling window (px)
+
+    # Per-class confidence thresholds (override _DETECT_CONF for specific classes)
+    _CLASS_CONF = {
+        2: 0.82,  # chair — high false-positive rate, require 82%
+    }
+    # How many times an object must be seen before saving to known_objects
+    _MEMORY_SIGHT_THRESH = 3
 
     # Post-confirmation: back up for this many seconds after visiting an object
     _BACKUP_DURATION_S = 1.5
@@ -122,9 +129,12 @@ def run(
         detections = []       # [(class_id, u_center, v_center, conf), ...]
         queue_idx = 0         # current position in object_queue
         target_world = None   # (wx, wy) estimated world pos of target
-        confirm_count = 0     # consecutive frames target seen within range
+        confirming_since_t = None  # sim_t when stop-and-confirm started
         nav_active = False    # True while approaching a detected object
         backup_until_t = 0.0  # sim_t until which the robot backs away
+        known_objects = {}    # {class_id: (wx, wy)} — remembered positions
+        visited_positions = []  # [(wx, wy)] — positions of visited objects
+        sight_counts = {}     # {class_id: (count, wx, wy)} — sighting accumulator
     _ds = _DS()
 
     def _run_yolo(rgb, step_idx):
@@ -144,6 +154,10 @@ def run(
             for box in r.boxes:
                 cls_id = int(box.cls[0])
                 conf = float(box.conf[0])
+                # Per-class confidence gate
+                min_conf = _CLASS_CONF.get(cls_id, _DETECT_CONF)
+                if conf < min_conf:
+                    continue
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
                 dets.append((
                     cls_id,
@@ -251,6 +265,60 @@ def run(
 
                 dets = _run_yolo(rgb, step_index)
 
+                # Save world positions of ALL detected objects (not just target)
+                rx, ry, rt = slam.odom.pose
+                visited_set = set(current_object_queue[:_ds.queue_idx])
+                for det in dets:
+                    cls_id_det = det[0]
+                    if cls_id_det in visited_set:
+                        continue
+                    uc_det, vc_det = det[1], det[2]
+                    d_det = _sample_depth_at(depth, uc_det, vc_det)
+                    if d_det is not None:
+                        wx_det, wy_det = _pixel_to_world(
+                            uc_det, d_det, rx, ry, rt
+                        )
+                    else:
+                        # Beyond depth range — estimate position from bearing
+                        _bearing_det = _math.atan2(_RGB_CX - uc_det, _RGB_FX)
+                        _ga_det = rt + _bearing_det
+                        wx_det = rx + 5.0 * _math.cos(_ga_det)
+                        wy_det = ry + 5.0 * _math.sin(_ga_det)
+                        too_close = any(
+                            _math.hypot(wx_det - vpx, wy_det - vpy) < 1.5
+                            for vpx, vpy in _ds.visited_positions
+                        )
+                        if too_close:
+                            continue
+                        # Accumulate sightings — only promote to known after
+                        # _MEMORY_SIGHT_THRESH consistent detections
+                        prev = _ds.sight_counts.get(cls_id_det)
+                        if prev is not None:
+                            cnt, px, py = prev
+                            if _math.hypot(wx_det - px, wy_det - py) < 1.0:
+                                cnt += 1
+                                # running average of position
+                                avg_x = (px * (cnt - 1) + wx_det) / cnt
+                                avg_y = (py * (cnt - 1) + wy_det) / cnt
+                                _ds.sight_counts[cls_id_det] = (cnt, avg_x, avg_y)
+                            else:
+                                # position jumped — reset counter
+                                _ds.sight_counts[cls_id_det] = (1, wx_det, wy_det)
+                        else:
+                            _ds.sight_counts[cls_id_det] = (1, wx_det, wy_det)
+
+                        cnt, sx, sy = _ds.sight_counts[cls_id_det]
+                        if cnt >= _MEMORY_SIGHT_THRESH:
+                            _names = {0: "backpack", 1: "bottle", 2: "chair",
+                                      3: "cup", 4: "laptop"}
+                            if cls_id_det not in _ds.known_objects:
+                                print(
+                                    f"[Memory] Saved {_names.get(cls_id_det, '?')}"
+                                    f" at ({sx:.2f}, {sy:.2f})"
+                                    f" after {cnt} sightings"
+                                )
+                            _ds.known_objects[cls_id_det] = (sx, sy)
+
                 # Pick highest-confidence detection of the target class
                 best, best_conf = None, 0.0
                 for det in dets:
@@ -258,29 +326,48 @@ def run(
                         best, best_conf = det, det[3]
 
                 if best is None:
-                    _ds.confirm_count = max(0, _ds.confirm_count - 1)
-                    if _ds.confirm_count == 0:
+                    if _ds.confirming_since_t is None:
+                        # Not confirming and no detection → lose target
                         _ds.target_world = None
                         _ds.nav_active = False
+                    # If confirming, robot is stopped near object — keep timer running
                     return None
 
                 _, uc, vc, _, _, _ = best
                 d_m = _sample_depth_at(depth, uc, vc)
                 if d_m is None:
+                    # Object visible but beyond depth range — navigate by bearing
+                    bearing = _math.atan2(_RGB_CX - uc, _RGB_FX)
+                    _FAR_ASSUMED_DIST = 5.0
+                    ga = rt + bearing
+                    wx = rx + _FAR_ASSUMED_DIST * _math.cos(ga)
+                    wy = ry + _FAR_ASSUMED_DIST * _math.sin(ga)
+                    _ds.target_world = (wx, wy)
+                    _ds.nav_active = True
+                    _ds.confirming_since_t = None
                     return None
 
-                rx, ry, rt = slam.odom.pose
                 wx, wy = _pixel_to_world(uc, d_m, rx, ry, rt)
                 _ds.target_world = (wx, wy)
                 _ds.nav_active = True
 
                 dist = _math.hypot(wx - rx, wy - ry)
                 if dist < _CONFIRM_DIST_M:
-                    _ds.confirm_count += 1
-                    if _ds.confirm_count >= _CONFIRM_FRAMES:
+                    # Inside confirmation radius — start or continue stop timer
+                    if _ds.confirming_since_t is None:
+                        _ds.confirming_since_t = sim_t
+                        print(
+                            f"[Detector] Target in range ({dist:.2f}m), "
+                            f"stopping for {_CONFIRM_WAIT_S}s confirmation..."
+                        )
+                    elapsed = sim_t - _ds.confirming_since_t
+                    if elapsed >= _CONFIRM_WAIT_S:
                         confirmed_id = target_cls
                         _ds.queue_idx += 1
-                        _ds.confirm_count = 0
+                        _ds.confirming_since_t = None
+                        _ds.visited_positions.append((wx, wy))
+                        if confirmed_id in _ds.known_objects:
+                            del _ds.known_objects[confirmed_id]
                         _ds.target_world = None
                         _ds.nav_active = False
                         _ds.backup_until_t = sim_t + _BACKUP_DURATION_S
@@ -290,7 +377,8 @@ def run(
                         )
                         return confirmed_id
                 else:
-                    _ds.confirm_count = max(0, _ds.confirm_count - 1)
+                    # Outside confirmation radius — reset timer
+                    _ds.confirming_since_t = None
 
                 return None
 
@@ -312,26 +400,43 @@ def run(
             # Reset SLAM odometry after a fall (local_t near zero = just reset)
             if local_t < control_dt * 2:
                 slam.reset_pose()
-                _ds.confirm_count = 0
+                _ds.confirming_since_t = None
                 _ds.target_world = None
                 _ds.nav_active = False
 
-            # Direct SLAM toward detected object or let it explore frontiers
+            # Pass visited positions to SLAM for exclusion zones
+            slam.set_exclusion_zones(_ds.visited_positions)
+
+            # Direct SLAM toward detected object, known object, or explore frontiers
             if _ds.nav_active and _ds.target_world is not None:
                 slam.set_navigation_target(*_ds.target_world)
+            elif (_ds.queue_idx < len(object_queue)
+                  and object_queue[_ds.queue_idx] in _ds.known_objects):
+                known_pos = _ds.known_objects[object_queue[_ds.queue_idx]]
+                slam.set_navigation_target(*known_pos)
             else:
                 slam.clear_navigation_target()
 
             # Always feed sensor data to SLAM (builds map even during warmup)
             vx_cmd, vy_cmd, vw_cmd = slam.update(step_index, state, camera_data)
 
-            if local_t < warmup_s:
+            if _ds.queue_idx >= len(object_queue) and len(object_queue) > 0:
+                # All objects visited — stop near the last one
+                vx = 0.0
+                vy = 0.0
+                vw = 0.0
+            elif local_t < warmup_s:
                 vx = 0.0
                 vy = 0.0
                 vw = 0.0
             elif sim_t < _ds.backup_until_t:
                 # Back away after confirming an object visit
                 vx = _BACKUP_VX
+                vy = 0.0
+                vw = 0.0
+            elif _ds.confirming_since_t is not None:
+                # Stopped inside confirmation radius, waiting 2s
+                vx = 0.0
                 vy = 0.0
                 vw = 0.0
             else:
@@ -356,8 +461,10 @@ def run(
                     queue=object_queue,
                     queue_idx=_ds.queue_idx,
                     sim_t=sim_t,
-                    confirm_count=_ds.confirm_count,
-                    confirm_needed=_CONFIRM_FRAMES,
+                    confirm_count=(sim_t - _ds.confirming_since_t) if _ds.confirming_since_t is not None else 0.0,
+                    confirm_needed=_CONFIRM_WAIT_S,
+                    known_objects=_ds.known_objects,
+                    visited_positions=_ds.visited_positions,
                 )
 
             # Debug: save occupancy grid snapshot periodically

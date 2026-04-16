@@ -47,7 +47,7 @@ _CLR_LOOKAHEAD = (255, 255, 0) # cyan
 class DashboardVisualizer:
     """All-in-one OpenCV dashboard for the Aliengo navigation system."""
 
-    MAP_DISPLAY_SIZE = 360  # pixels — map panel height & width
+    MAP_DISPLAY_SIZE = 720  # pixels — map panel height & width
 
     def __init__(
         self,
@@ -99,6 +99,8 @@ class DashboardVisualizer:
         sim_t: float = 0.0,
         confirm_count: int = 0,
         confirm_needed: int = 3,
+        known_objects: Optional[dict] = None,
+        visited_positions: Optional[list] = None,
     ) -> None:
         """Render one dashboard frame. Call once per control tick (or throttled)."""
         if not self._active:
@@ -110,11 +112,21 @@ class DashboardVisualizer:
         cam_panel = self._render_camera(rgb, depth, detections, target_cls)
 
         # -- map panel (right) --
-        map_panel = self._render_map(slam)
+        map_panel = self._render_map(slam, known_objects, visited_positions)
 
-        # Scale map to match camera height
+        # Scale map to configured display size
+        map_panel = cv2.resize(
+            map_panel,
+            (self.MAP_DISPLAY_SIZE, self.MAP_DISPLAY_SIZE),
+            interpolation=cv2.INTER_NEAREST,
+        )
+
+        # Pad camera panel to match map height if needed
         cam_h = cam_panel.shape[0]
-        map_panel = cv2.resize(map_panel, (cam_h, cam_h), interpolation=cv2.INTER_NEAREST)
+        map_h = map_panel.shape[0]
+        if cam_h < map_h:
+            pad = np.full((map_h - cam_h, cam_panel.shape[1], 3), 30, dtype=np.uint8)
+            cam_panel = np.concatenate((cam_panel, pad), axis=0)
 
         # -- status bar (bottom) --
         status_w = cam_panel.shape[1] + map_panel.shape[1]
@@ -227,7 +239,7 @@ class DashboardVisualizer:
     # Map panel
     # ------------------------------------------------------------------
 
-    def _render_map(self, slam) -> np.ndarray:
+    def _render_map(self, slam, known_objects=None, visited_positions=None) -> np.ndarray:
         cv2 = self._cv2
 
         if slam is None:
@@ -236,10 +248,20 @@ class DashboardVisualizer:
                         cv2.FONT_HERSHEY_SIMPLEX, 1.0, (80, 80, 80), 2)
             return panel
 
-        # Base occupancy image
+        # Base occupancy image — flip horizontally to correct mirror
         img = slam.grid.to_image()  # (H, W, 3) uint8
+        img = cv2.flip(img, 1)
+        H, W = img.shape[:2]
 
         rx, ry, rt = slam.odom.pose
+
+        # Helper: world → display pixel (accounts for horizontal flip)
+        def w2d(wx, wy):
+            gx, gy = slam.grid.w2g(wx, wy)
+            return (W - 1 - gx, gy)
+
+        def in_disp(dx, dy):
+            return 0 <= dx < W and 0 <= dy < H
 
         # -- robot trail --
         self._trail.append((rx, ry))
@@ -248,24 +270,23 @@ class DashboardVisualizer:
 
         fade_step = max(1, len(self._trail))
         for i, (tx, ty) in enumerate(self._trail):
-            gx, gy = slam.grid.w2g(tx, ty)
-            if slam.grid.in_bounds(gx, gy):
+            dx, dy = w2d(tx, ty)
+            if in_disp(dx, dy):
                 alpha = int(60 + 140 * (i / fade_step))
-                cv2.circle(img, (gx, gy), 1, (0, 0, alpha), -1)
+                cv2.circle(img, (dx, dy), 1, (0, 0, alpha), -1)
 
-        # -- frontiers --
-        frontier_targets = slam.explorer.find_targets(rx, ry, n=5)
+        # -- frontiers (use cached result from SLAM update, not recomputed) --
+        frontier_targets = getattr(slam, "cached_frontiers", [])
         for fx, fy in frontier_targets:
-            gx, gy = slam.grid.w2g(fx, fy)
-            if slam.grid.in_bounds(gx, gy):
-                cv2.circle(img, (gx, gy), 4, _CLR_FRONTIER, 1)
+            dx, dy = w2d(fx, fy)
+            if in_disp(dx, dy):
+                cv2.circle(img, (dx, dy), 4, _CLR_FRONTIER, 1)
 
         # -- planned path --
         if slam.path and len(slam.path) > 1:
-            pts = [slam.grid.w2g(*p) for p in slam.path]
+            pts = [w2d(*p) for p in slam.path]
             for i in range(len(pts) - 1):
                 cv2.line(img, pts[i], pts[i + 1], _CLR_PATH, 2, cv2.LINE_AA)
-            # waypoint dots
             for i, pt in enumerate(pts):
                 color = _CLR_WAYPOINT
                 r = 3
@@ -274,36 +295,64 @@ class DashboardVisualizer:
                     r = 4
                 cv2.circle(img, pt, r, color, -1)
 
+        # -- exclusion zones around visited objects (1.5 m circles) --
+        if visited_positions:
+            for vx, vy in visited_positions:
+                dx, dy = w2d(vx, vy)
+                r_px = int(1.5 / slam.grid.resolution)
+                if in_disp(dx, dy):
+                    cv2.circle(img, (dx, dy), r_px, (0, 180, 0), 1, cv2.LINE_AA)
+                    cv2.drawMarker(img, (dx, dy), (0, 180, 0),
+                                   cv2.MARKER_TILTED_CROSS, 8, 2)
+
+        # -- known (remembered) objects --
+        if known_objects:
+            for cls_id, (kx, ky) in known_objects.items():
+                dx, dy = w2d(kx, ky)
+                if in_disp(dx, dy):
+                    color = CLASS_COLORS.get(cls_id, (200, 200, 200))
+                    cv2.drawMarker(img, (dx, dy), color,
+                                   cv2.MARKER_DIAMOND, 10, 2, cv2.LINE_AA)
+                    name = CLASS_NAMES.get(cls_id, f"#{cls_id}")
+                    cv2.putText(img, name, (dx + 7, dy - 4),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.30, color, 1, cv2.LINE_AA)
+
         # -- navigation target --
         if slam.target is not None:
-            tgx, tgy = slam.grid.w2g(*slam.target)
-            if slam.grid.in_bounds(tgx, tgy):
+            dx, dy = w2d(*slam.target)
+            if in_disp(dx, dy):
                 is_explicit = slam._explicit_target is not None
                 color = _CLR_EXPLICIT if is_explicit else _CLR_TARGET
-                cv2.drawMarker(img, (tgx, tgy), color,
+                cv2.drawMarker(img, (dx, dy), color,
                                cv2.MARKER_CROSS, 14, 2, cv2.LINE_AA)
                 label = "OBJ" if is_explicit else "FRN"
-                cv2.putText(img, label, (tgx + 8, tgy - 4),
+                cv2.putText(img, label, (dx + 8, dy - 4),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1, cv2.LINE_AA)
 
         # -- robot position + heading arrow --
-        rgx, rgy = slam.grid.w2g(rx, ry)
-        if slam.grid.in_bounds(rgx, rgy):
-            cv2.circle(img, (rgx, rgy), 5, _CLR_ROBOT, -1)
+        rdx, rdy = w2d(rx, ry)
+        if in_disp(rdx, rdy):
+            cv2.circle(img, (rdx, rdy), 5, _CLR_ROBOT, -1)
             arrow_len = 12
-            ax = int(rgx + arrow_len * math.cos(rt))
-            ay = int(rgy + arrow_len * math.sin(rt))
-            cv2.arrowedLine(img, (rgx, rgy), (ax, ay), _CLR_ROBOT, 2, tipLength=0.4)
+            # Negate cos(rt) because x-axis is flipped
+            ax = int(rdx - arrow_len * math.cos(rt))
+            ay = int(rdy + arrow_len * math.sin(rt))
+            cv2.arrowedLine(img, (rdx, rdy), (ax, ay), _CLR_ROBOT, 2, tipLength=0.4)
 
         # -- legend --
         legend_y = 15
-        for label, color in [
+        items = [
             ("Robot", _CLR_ROBOT),
             ("Path", _CLR_PATH),
             ("Frontier", _CLR_FRONTIER),
             ("Target", _CLR_TARGET),
             ("Object", _CLR_EXPLICIT),
-        ]:
+        ]
+        if known_objects:
+            items.append(("Known", (200, 200, 0)))
+        if visited_positions:
+            items.append(("Visited", (0, 180, 0)))
+        for label, color in items:
             cv2.circle(img, (10, legend_y), 4, color, -1)
             cv2.putText(img, label, (18, legend_y + 4),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.32, color, 1, cv2.LINE_AA)
@@ -357,7 +406,7 @@ class DashboardVisualizer:
                 name = CLASS_NAMES.get(target_cls, f"#{target_cls}")
                 progress_txt += f"  Target: {name}"
             if confirm_count > 0:
-                progress_txt += f"  Confirm: {confirm_count}/{confirm_needed}"
+                progress_txt += f"  Confirm: {confirm_count:.1f}/{confirm_needed:.1f}s"
             cv2.putText(bar, progress_txt, (8, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 200, 255), 1, cv2.LINE_AA)
 

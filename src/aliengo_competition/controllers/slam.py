@@ -58,11 +58,11 @@ class OccupancyGrid:
 
     def __init__(
         self,
-        size_m: float = 20.0,
+        size_m: float = 40.0,
         resolution: float = 0.05,
         depth_hfov_deg: float = 86.0,
-        depth_max_m: float = 3.5,
-        depth_min_m: float = 0.15,
+        depth_max_m: float = 4.0,
+        depth_min_m: float = 0.4,
     ) -> None:
         self.resolution = resolution
         self.size_m = size_m
@@ -116,7 +116,7 @@ class OccupancyGrid:
         rtheta: float,
         depth_img: np.ndarray,
     ) -> None:
-        """Project a depth image into the 2-D grid."""
+        """Project a depth image into the 2-D grid (vectorised)."""
         H, W = depth_img.shape
         fx = W / (2.0 * math.tan(self.depth_hfov / 2.0))
         cx = W / 2.0
@@ -124,43 +124,47 @@ class OccupancyGrid:
         # horizontal strip from the middle of the depth image
         mid = H // 2
         band = 10
-        row_lo = max(0, mid - band)
-        row_hi = min(H, mid + band)
-        strip = np.nanmedian(depth_img[row_lo:row_hi, :], axis=0)
+        strip = np.nanmedian(depth_img[max(0, mid - band):min(H, mid + band), :], axis=0)
+
+        col_step = 3
+        u_arr = np.arange(0, W, col_step)
+        d_arr = strip[u_arr].astype(np.float32)
+
+        bearings = np.arctan2(cx - u_arr, fx)
+        ga_arr = rtheta + bearings
+        cos_b = np.cos(bearings)
+        cos_ga = np.cos(ga_arr)
+        sin_ga = np.sin(ga_arr)
 
         rgx, rgy = self.w2g(rx, ry)
-        col_step = 3
+        finite = np.isfinite(d_arr)
 
-        for u in range(0, W, col_step):
-            d = float(strip[u])
-            bearing = math.atan2(cx - u, fx)  # positive = left
-            ga = rtheta + bearing
-            cos_ga = math.cos(ga)
-            sin_ga = math.sin(ga)
+        # --- occupied rays ---
+        hit = finite & (d_arr > self.depth_min) & (d_arr < self.depth_max)
+        if hit.any():
+            safe_cos = np.where(np.abs(cos_b[hit]) > 1e-6, cos_b[hit], 1.0)
+            range_d = d_arr[hit] / safe_cos
+            px = rx + range_d * cos_ga[hit]
+            py = ry + range_d * sin_ga[hit]
+            ogx_arr = ((px + self.origin) / self.resolution).astype(int)
+            ogy_arr = ((py + self.origin) / self.resolution).astype(int)
+            in_b = (ogx_arr >= 0) & (ogx_arr < self.w) & (ogy_arr >= 0) & (ogy_arr < self.h)
+            np.add.at(self.grid, (ogy_arr[in_b], ogx_arr[in_b]), self.L_OCC)
+            np.clip(self.grid, self.L_MIN, self.L_MAX, out=self.grid)
+            for ogx_i, ogy_i in zip(ogx_arr[in_b], ogy_arr[in_b]):
+                self._ray_free(rgx, rgy, ogx_i, ogy_i)
 
-            if self.depth_min < d < self.depth_max and math.isfinite(d):
-                # z-depth → euclidean range along the ray
-                cos_bearing = math.cos(bearing)
-                range_d = d / cos_bearing if abs(cos_bearing) > 1e-6 else d
-                # occupied endpoint
-                px = rx + range_d * cos_ga
-                py = ry + range_d * sin_ga
-                ogx, ogy = self.w2g(px, py)
-                # free-space ray
-                self._ray_free(rgx, rgy, ogx, ogy)
-                # mark occupied
-                if self.in_bounds(ogx, ogy):
-                    self.grid[ogy, ogx] = min(
-                        self.grid[ogy, ogx] + self.L_OCC, self.L_MAX
-                    )
-            elif math.isfinite(d) and d >= self.depth_max:
-                # ray to max range — all free, no obstacle
-                cos_bearing = math.cos(bearing)
-                max_range = self.depth_max / cos_bearing if abs(cos_bearing) > 1e-6 else self.depth_max
-                ex = rx + max_range * cos_ga
-                ey = ry + max_range * sin_ga
-                egx, egy = self.w2g(ex, ey)
-                self._ray_free(rgx, rgy, egx, egy)
+        # --- far rays (all free) ---
+        far = finite & (d_arr >= self.depth_max)
+        if far.any():
+            safe_cos_f = np.where(np.abs(cos_b[far]) > 1e-6, cos_b[far], 1.0)
+            max_range = self.depth_max / safe_cos_f
+            ex = rx + max_range * cos_ga[far]
+            ey = ry + max_range * sin_ga[far]
+            egx_arr = ((ex + self.origin) / self.resolution).astype(int)
+            egy_arr = ((ey + self.origin) / self.resolution).astype(int)
+            for egx_i, egy_i in zip(egx_arr, egy_arr):
+                self._ray_free(rgx, rgy, egx_i, egy_i)
 
         self._dirty = True
 
@@ -187,27 +191,29 @@ class OccupancyGrid:
             return self._inflated
 
         occ = self.grid > self.OCC_THRESH
-        result = occ.copy()
+        try:
+            import cv2 as _cv2
+            y_idx, x_idx = np.ogrid[-r:r + 1, -r:r + 1]
+            kernel = ((x_idx ** 2 + y_idx ** 2) <= r * r).astype(np.uint8)
+            self._inflated = _cv2.dilate(
+                occ.astype(np.uint8), kernel
+            ).astype(bool)
+        except ImportError:
+            # fallback: manual numpy dilation
+            result = occ.copy()
+            for dy in range(-r, r + 1):
+                for dx in range(-r, r + 1):
+                    if dx * dx + dy * dy > r * r:
+                        continue
+                    sy0, sy1 = max(0, -dy), min(self.h, self.h - dy)
+                    sx0, sx1 = max(0, -dx), min(self.w, self.w - dx)
+                    dy0, dy1 = max(0, dy), min(self.h, self.h + dy)
+                    dx0, dx1 = max(0, dx), min(self.w, self.w + dx)
+                    result[dy0:dy1, dx0:dx1] |= occ[sy0:sy1, sx0:sx1]
+            self._inflated = result
 
-        for dy in range(-r, r + 1):
-            for dx in range(-r, r + 1):
-                if dx * dx + dy * dy > r * r:
-                    continue
-                # source slice
-                sy0 = max(0, -dy)
-                sy1 = min(self.h, self.h - dy)
-                sx0 = max(0, -dx)
-                sx1 = min(self.w, self.w - dx)
-                # destination slice
-                dy0 = max(0, dy)
-                dy1 = min(self.h, self.h + dy)
-                dx0 = max(0, dx)
-                dx1 = min(self.w, self.w + dx)
-                result[dy0:dy1, dx0:dx1] |= occ[sy0:sy1, sx0:sx1]
-
-        self._inflated = result
         self._dirty = False
-        return result
+        return self._inflated
 
     # -- debug visualisation -------------------------------------------------
 
@@ -500,7 +506,7 @@ class SlamController:
 
     def __init__(self, control_dt: float = 0.02) -> None:
         self.odom = OdometryTracker()
-        self.grid = OccupancyGrid(size_m=20.0, resolution=0.05)
+        self.grid = OccupancyGrid(size_m=40.0, resolution=0.05)
         self.explorer = FrontierExplorer(self.grid, min_size=5)
         self.planner = PathPlanner(self.grid)
         self.dt = control_dt
@@ -510,11 +516,13 @@ class SlamController:
         self.path_idx: int = 0
         self.target: Optional[Tuple[float, float]] = None
         self._explicit_target: Optional[Tuple[float, float]] = None
+        self._exclusion_zones: List[Tuple[float, float]] = []  # visited object positions
 
         # step counters for throttled updates
         self._last_map: int = -999
         self._last_frontier: int = -999
         self._last_plan: int = -999
+        self.cached_frontiers: List[Tuple[float, float]] = []
 
         # update intervals (in simulation steps)
         self.MAP_INTERVAL: int = 5       # ~10 Hz
@@ -523,8 +531,8 @@ class SlamController:
 
         # navigation tuning
         self.WP_REACH: float = 0.3       # waypoint reached radius (m)
-        self.MAX_VX: float = 0.4
-        self.MIN_VX: float = 0.08
+        self.MAX_VX: float = 0.55
+        self.MIN_VX: float = 0.10
         self.MAX_WZ: float = 0.8
         self.TURN_THRESH: float = 0.4    # turn-in-place if angle error > this
         self.OBS_STOP: float = 0.45      # stop if obstacle closer than this (m)
@@ -562,6 +570,10 @@ class SlamController:
         """Resume frontier-based exploration."""
         self._explicit_target = None
 
+    def set_exclusion_zones(self, positions: List[Tuple[float, float]]) -> None:
+        """Mark visited object positions; frontiers within 1.5 m are deprioritized."""
+        self._exclusion_zones = list(positions)
+
     def update(
         self,
         step_index: int,
@@ -588,7 +600,16 @@ class SlamController:
         if self._explicit_target is not None:
             self.target = self._explicit_target
         elif (step_index - self._last_frontier) >= self.FRONTIER_INTERVAL:
-            targets = self.explorer.find_targets(rx, ry, n=3)
+            targets = self.explorer.find_targets(rx, ry, n=5)
+            # Filter out frontiers within 1.5 m of visited objects
+            if self._exclusion_zones and targets:
+                filtered = [
+                    t for t in targets
+                    if not any(math.hypot(t[0] - zx, t[1] - zy) < 1.5
+                               for zx, zy in self._exclusion_zones)
+                ]
+                targets = filtered if filtered else targets
+            self.cached_frontiers = targets
             self.target = targets[0] if targets else None
             self._last_frontier = step_index
             self._last_plan = -999  # force replan on new target
