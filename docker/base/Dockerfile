@@ -3,6 +3,11 @@ FROM nvidia/cuda:11.3.1-cudnn8-devel-ubuntu20.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Etc/UTC
 
+RUN echo 'deb http://mirror.truenetwork.ru/ubuntu/ focal main restricted universe multiverse' > /etc/apt/sources.list && \
+    echo 'deb http://mirror.truenetwork.ru/ubuntu/ focal-updates main restricted universe multiverse' >> /etc/apt/sources.list && \
+    echo 'deb http://mirror.truenetwork.ru/ubuntu/ focal-security main restricted universe multiverse' >> /etc/apt/sources.list && \
+    echo 'deb http://mirror.truenetwork.ru/ubuntu/ focal-backports main restricted universe multiverse' >> /etc/apt/sources.list
+
 RUN apt-get update && apt-get install -y \
     python3.8 \
     python3.8-dev \
