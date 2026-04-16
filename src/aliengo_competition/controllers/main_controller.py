@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+from typing import Optional
 
 from aliengo_competition.common.run_logger import CompetitionRunLogger
 from aliengo_competition.robot_interface.base import AliengoRobotInterface
@@ -17,6 +18,8 @@ def _unwrap_env_from_robot(robot: AliengoRobotInterface):
 def _infer_control_dt(robot: AliengoRobotInterface, fallback_dt: float = 0.02) -> float:
     env = _unwrap_env_from_robot(robot)
     dt = getattr(env, "dt", None) if env is not None else None
+    if dt is None:
+        return float(fallback_dt)
     try:
         dt_value = float(dt)
         if dt_value > 0.0:
@@ -55,6 +58,14 @@ def run(
                     for item in _raw_queue]
     print(f"[Контроллер] отрисовка_камеры={'включена' if render_camera else 'выключена'}")
     print(f"[Контроллер] object_queue={object_queue} (raw={_raw_queue})")
+    logger.log_event(
+        0.0,
+        "run_started",
+        requested_steps=requested_steps,
+        effective_steps=total_steps,
+        control_dt=f"{control_dt:.4f}",
+        object_queue=object_queue,
+    )
 
     # Редактируемые пользователем блоки в этом файле:
     # 1. USER PARAMETERS START / END
@@ -83,7 +94,7 @@ def run(
     _YOLO_MODEL_PATH = "runs/yolo_detector/train/weights/best1.pt"
     try:
         if _os.path.isfile(_YOLO_MODEL_PATH):
-            from ultralytics import YOLO as _YOLO
+            from ultralytics.models.yolo.model import YOLO as _YOLO
             _yolo_model = _YOLO(_YOLO_MODEL_PATH)
             _model_names = getattr(_yolo_model, "names", {})
             print(f"[Detector] YOLO loaded: {_YOLO_MODEL_PATH}")
@@ -138,17 +149,22 @@ def run(
 
     # Mutable state that persists across loop iterations
     class _DS:
-        last_detect_step = -999
-        detections = []       # [(class_id, u_center, v_center, conf), ...]
-        queue_idx = 0         # current position in object_queue
-        target_world = None   # (wx, wy) estimated world pos of target
-        confirming_since_t = None  # sim_t when stop-and-confirm started
-        nav_active = False    # True while approaching a detected object
-        backup_until_t = 0.0  # sim_t until which the robot backs away
-        known_objects = {}    # {class_id: (wx, wy)} — remembered positions
-        visited_positions = []  # [(wx, wy)] — positions of visited objects
-        sight_counts = {}     # {class_id: (count, wx, wy)} — sighting accumulator
-        passby_active = False # True when using pass-by approach for current target
+        last_detect_step: int = -999
+        detections: list = []       # [(class_id, u_center, v_center, conf), ...]
+        queue_idx: int = 0          # current position in object_queue
+        announced_queue_idx: int = -1
+        target_world: Optional[tuple] = None   # (wx, wy) estimated world pos of target
+        confirming_since_t: Optional[float] = None  # sim_t when stop-and-confirm started
+        nav_active: bool = False    # True while approaching a detected object
+        target_visible: bool = False
+        backup_until_t: float = 0.0  # sim_t until which the robot backs away
+        known_objects: dict = {}    # {class_id: (wx, wy)} — remembered positions
+        visited_positions: list = []  # [(wx, wy)] — positions of visited objects
+        sight_counts: dict = {}     # {class_id: (count, wx, wy)} — sighting accumulator
+        passby_active: bool = False # True when using pass-by approach for current target
+        search_rotation_active: bool = False
+        motion_mode: Optional[str] = None
+        queue_completed_logged: bool = False
     _ds = _DS()
 
     def _run_yolo(rgb, step_idx):
@@ -294,6 +310,20 @@ def run(
             # ================= USER CONTROL LOGIC START =================
             sim_t = state.sim_time_s
 
+            if _ds.queue_idx < len(object_queue) and _ds.announced_queue_idx != _ds.queue_idx:
+                _target = object_queue[_ds.queue_idx]
+                logger.log_event(
+                    sim_t,
+                    "target_selected",
+                    queue_idx=_ds.queue_idx,
+                    target_id=_target,
+                    remaining=len(object_queue) - _ds.queue_idx,
+                )
+                _ds.announced_queue_idx = _ds.queue_idx
+            elif _ds.queue_idx >= len(object_queue) and not _ds.queue_completed_logged:
+                logger.log_event(sim_t, "queue_completed", total_targets=len(object_queue))
+                _ds.queue_completed_logged = True
+
             joint_names = state.joints.name
             relative_dof_pos = state.q
             dof_vel = state.q_dot
@@ -405,6 +435,14 @@ def run(
                         best, best_conf = det, det[3]
 
                 if best is None:
+                    if _ds.target_visible and _ds.confirming_since_t is None:
+                        logger.log_event(
+                            sim_t,
+                            "target_lost",
+                            target_id=target_cls,
+                            queue_idx=_ds.queue_idx,
+                        )
+                    _ds.target_visible = False
                     if _ds.confirming_since_t is None:
                         # Not confirming and no detection → lose target
                         _ds.target_world = None
@@ -423,18 +461,43 @@ def run(
                     wy = ry + _est_d * _math.sin(ga)
                     _ds.target_world = (wx, wy)
                     _ds.nav_active = True
+                    if not _ds.target_visible:
+                        logger.log_event(
+                            sim_t,
+                            "target_acquired",
+                            target_id=target_cls,
+                            depth="estimated",
+                            distance_m=f"{_est_d:.2f}",
+                        )
+                    _ds.target_visible = True
                     _ds.confirming_since_t = None
                     return None
 
                 wx, wy = _pixel_to_world(uc, d_m, rx, ry, rt)
                 _ds.target_world = (wx, wy)
                 _ds.nav_active = True
+                if not _ds.target_visible:
+                    logger.log_event(
+                        sim_t,
+                        "target_acquired",
+                        target_id=target_cls,
+                        depth="sensor",
+                        distance_m=f"{d_m:.2f}",
+                    )
+                _ds.target_visible = True
 
                 dist = _math.hypot(wx - rx, wy - ry)
                 if dist < _CONFIRM_DIST_M:
                     # Inside confirmation radius — start or continue stop timer
                     if _ds.confirming_since_t is None:
                         _ds.confirming_since_t = sim_t
+                        logger.log_event(
+                            sim_t,
+                            "confirmation_started",
+                            target_id=target_cls,
+                            distance_m=f"{dist:.2f}",
+                            wait_s=f"{_CONFIRM_WAIT_S:.1f}",
+                        )
                         print(
                             f"[Detector] Target in range ({dist:.2f}m), "
                             f"stopping for {_CONFIRM_WAIT_S}s confirmation..."
@@ -450,6 +513,19 @@ def run(
                         _ds.target_world = None
                         _ds.nav_active = False
                         _ds.backup_until_t = sim_t + (0.3 if _ds.passby_active else _BACKUP_DURATION_S)
+                        _ds.target_visible = False
+                        logger.log_event(
+                            sim_t,
+                            "object_confirmed",
+                            object_id=confirmed_id,
+                            queue_progress=f"{_ds.queue_idx}/{len(current_object_queue)}",
+                        )
+                        logger.log_event(
+                            sim_t,
+                            "backup_started",
+                            duration_s=f"{(0.3 if _ds.passby_active else _BACKUP_DURATION_S):.2f}",
+                            passby_active=_ds.passby_active,
+                        )
                         print(
                             f"[Detector] CONFIRMED object {confirmed_id} "
                             f"({_ds.queue_idx}/{len(current_object_queue)})"
@@ -457,6 +533,13 @@ def run(
                         return confirmed_id
                 else:
                     # Outside confirmation radius — reset timer
+                    if _ds.confirming_since_t is not None:
+                        logger.log_event(
+                            sim_t,
+                            "confirmation_cancelled",
+                            target_id=target_cls,
+                            distance_m=f"{dist:.2f}",
+                        )
                     _ds.confirming_since_t = None
 
                 return None
@@ -551,24 +634,57 @@ def run(
                 vx = 0.0
                 vy = 0.0
                 vw = 0.0
+                current_mode = "all_done_stop"
             elif local_t < warmup_s:
                 vx = 0.0
                 vy = 0.0
                 vw = 0.0
+                current_mode = "warmup_stop"
             elif sim_t < _ds.backup_until_t:
                 # Back away after confirming an object visit
                 vx = _BACKUP_VX
                 vy = 0.0
                 vw = 0.0
+                current_mode = "backup"
             elif _ds.confirming_since_t is not None:
                 # Stopped inside confirmation radius, waiting 2s
                 vx = 0.0
                 vy = 0.0
                 vw = 0.0
+                current_mode = "confirm_wait"
             else:
                 vx = vx_cmd
                 vy = vy_cmd
                 vw = vw_cmd
+                current_mode = "navigate"
+
+            if _ds.motion_mode != current_mode:
+                logger.log_event(
+                    sim_t,
+                    "motion_mode_changed",
+                    mode=current_mode,
+                    vx=f"{vx:.2f}",
+                    vy=f"{vy:.2f}",
+                    vw=f"{vw:.2f}",
+                )
+                _ds.motion_mode = current_mode
+
+            is_search_rotation = (
+                current_mode == "navigate"
+                and _nav_pos is None
+                and abs(vw) >= 0.5
+                and abs(vx) <= 0.3
+            )
+            if is_search_rotation and not _ds.search_rotation_active:
+                logger.log_event(
+                    sim_t,
+                    "search_rotation_started",
+                    vw=f"{vw:.2f}",
+                    reason="target_not_visible",
+                )
+            elif not is_search_rotation and _ds.search_rotation_active:
+                logger.log_event(sim_t, "search_rotation_finished")
+            _ds.search_rotation_active = is_search_rotation
 
             # --- Dashboard visualization (throttled) ---
             if step_index % _VIS_EVERY == 0:
@@ -587,8 +703,8 @@ def run(
                     queue=object_queue,
                     queue_idx=_ds.queue_idx,
                     sim_t=sim_t,
-                    confirm_count=(sim_t - _ds.confirming_since_t) if _ds.confirming_since_t is not None else 0.0,
-                    confirm_needed=_CONFIRM_WAIT_S,
+                    confirm_count=int(sim_t - _ds.confirming_since_t) if _ds.confirming_since_t is not None else 0,
+                    confirm_needed=int(_CONFIRM_WAIT_S),
                     known_objects=_ds.known_objects,
                     visited_positions=_ds.visited_positions,
                 )
@@ -608,9 +724,11 @@ def run(
                 robot.stop()
                 robot.reset()
                 segment_start_t = (step_index + 1) * control_dt
+                logger.log_event(sim_t, "robot_fell_reset")
                 print("[Контроллер] робот упал -> сброс")
                 continue
     finally:
+        logger.log_event(0.0, "run_finished")
         logger.close()
         dashboard.close()
         robot.stop()

@@ -10,8 +10,9 @@ Shows:
 from __future__ import annotations
 
 import math
+import os
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -58,7 +59,7 @@ class DashboardVisualizer:
         self.enabled = bool(enabled)
         self.depth_max_m = max(float(depth_max_m), 0.1)
         self._trail_length = trail_length
-        self._cv2 = None
+        self._cv2: Any = None
         self._active = False
         self._window_name = "Aliengo Dashboard"
         self._trail: List[Tuple[float, float]] = []
@@ -68,6 +69,17 @@ class DashboardVisualizer:
 
         if not self.enabled:
             return
+
+        if "QT_QPA_FONTDIR" not in os.environ:
+            for font_dir in (
+                "/usr/share/fonts/truetype/dejavu",
+                "/usr/share/fonts/dejavu",
+                "/usr/share/fonts/truetype/liberation2",
+            ):
+                if os.path.isdir(font_dir):
+                    os.environ["QT_QPA_FONTDIR"] = font_dir
+                    break
+
         try:
             import cv2
         except ImportError as exc:

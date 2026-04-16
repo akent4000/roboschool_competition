@@ -237,12 +237,16 @@ class FrontierExplorer:
         self.min_size = min_size
 
     def find_targets(
-        self, rx: float, ry: float, n: int = 5
+        self,
+        rx: float,
+        ry: float,
+        n: int = 5,
+        strategy: str = "least_explored",
     ) -> List[Tuple[float, float]]:
-        """Return up to *n* frontier targets, scored by unknown-space density.
+        """Return up to *n* frontier targets.
 
-        Targets are pushed beyond the frontier centroid into unknown space
-        to encourage deeper exploration of unvisited areas.
+        ``strategy='least_explored'`` prefers frontiers bordering larger unknown areas.
+        ``strategy='nearest'`` prefers closer frontiers (legacy behavior).
         """
         g = self.grid
         free = g.grid < g.FREE_THRESH
@@ -264,8 +268,8 @@ class FrontierExplorer:
 
         clusters = self._cluster(fx, fy)
 
-        _UNKNOWN_RADIUS = 40   # cells (~2 m at 0.05 resolution)
-        _EXTEND_M = 1.5        # push target beyond frontier into unknown
+        _UNKNOWN_RADIUS = int(1.8 / g.resolution)
+        rgx, rgy = g.w2g(rx, ry)
 
         scored = []  # type: List[Tuple[float, float, float]]
         for cl in clusters:
@@ -274,33 +278,87 @@ class FrontierExplorer:
             mean_gx = sum(c[0] for c in cl) / len(cl)
             mean_gy = sum(c[1] for c in cl) / len(cl)
             wx, wy = g.g2w(int(mean_gx), int(mean_gy))
-            dist = math.hypot(wx - rx, wy - ry)
+            dist = math.hypot(mean_gx - rgx, mean_gy - rgy) * g.resolution
 
-            # Count unknown cells in a box around the frontier centroid
             cx, cy = int(mean_gx), int(mean_gy)
-            r = _UNKNOWN_RADIUS
-            x0 = max(0, cx - r)
-            x1 = min(g.w, cx + r + 1)
-            y0 = max(0, cy - r)
-            y1 = min(g.h, cy + r + 1)
-            box_area = max((x1 - x0) * (y1 - y0), 1)
-            unknown_frac = float(np.sum(unknown[y0:y1, x0:x1])) / box_area
+            unknown_frac = self._local_unknown_ratio(cx, cy, radius_cells=_UNKNOWN_RADIUS)
 
-            # Push the target deeper into unexplored space
-            if dist > 0.1:
-                dx, dy = (wx - rx) / dist, (wy - ry) / dist
-                wx += dx * _EXTEND_M
-                wy += dy * _EXTEND_M
+            if strategy == "nearest":
+                score = dist - 0.3 * math.sqrt(len(cl)) * g.resolution
+            else:
+                size_bonus = min(math.sqrt(len(cl)) * g.resolution, 1.5)
+                score = unknown_frac + 0.15 * size_bonus - 0.03 * dist
 
-            # Score: strongly prefer frontiers near large unknown regions,
-            # mildly penalize distance, reward larger clusters
-            score = (-unknown_frac * 10.0
-                     - 0.3 * math.sqrt(len(cl)) * g.resolution
-                     + dist * 0.3)
             scored.append((wx, wy, score))
 
-        scored.sort(key=lambda t: t[2])
+        if strategy == "nearest":
+            scored.sort(key=lambda t: t[2])
+        else:
+            scored.sort(key=lambda t: t[2], reverse=True)
+
         return [(t[0], t[1]) for t in scored[:n]]
+
+    def find_least_explored_target(
+        self,
+        rx: float,
+        ry: float,
+        sample_step_cells: int = 20,
+        patch_radius_cells: int = 20,
+    ) -> Optional[Tuple[float, float]]:
+        """Pick a free target near the least explored region of the grid."""
+        g = self.grid
+        blocked = g.inflated(r=4)
+        rgx, rgy = g.w2g(rx, ry)
+
+        best_score = -1.0
+        best_cell = None  # type: Optional[Tuple[int, int]]
+
+        x0 = patch_radius_cells
+        y0 = patch_radius_cells
+        x1 = max(g.w - patch_radius_cells, x0 + 1)
+        y1 = max(g.h - patch_radius_cells, y0 + 1)
+        step = max(sample_step_cells, 1)
+
+        for gy in range(y0, y1, step):
+            for gx in range(x0, x1, step):
+                if blocked[gy, gx]:
+                    continue
+
+                unknown_ratio = self._local_unknown_ratio(
+                    gx,
+                    gy,
+                    radius_cells=patch_radius_cells,
+                )
+                if unknown_ratio < 0.25:
+                    continue
+
+                dist = math.hypot(gx - rgx, gy - rgy) * g.resolution
+                if dist < 1.0:
+                    continue
+
+                score = unknown_ratio + 0.02 * min(dist, 8.0)
+                if score > best_score:
+                    best_score = score
+                    best_cell = (gx, gy)
+
+        if best_cell is None:
+            return None
+
+        return g.g2w(*best_cell)
+
+    def _local_unknown_ratio(self, gx: int, gy: int, radius_cells: int) -> float:
+        """Fraction of unknown cells around a grid coordinate."""
+        g = self.grid
+        x0 = max(0, gx - radius_cells)
+        x1 = min(g.w, gx + radius_cells + 1)
+        y0 = max(0, gy - radius_cells)
+        y1 = min(g.h, gy + radius_cells + 1)
+        if x0 >= x1 or y0 >= y1:
+            return 0.0
+
+        patch = g.grid[y0:y1, x0:x1]
+        unknown = (patch >= g.FREE_THRESH) & (patch <= g.OCC_THRESH)
+        return float(np.mean(unknown)) if unknown.size > 0 else 0.0
 
     @staticmethod
     def _cluster(
@@ -358,6 +416,7 @@ class PathPlanner:
         gx: float,
         gy: float,
         inflate_r: int = 4,
+        dense_step_m: float = 0.25,
     ) -> Optional[List[Tuple[float, float]]]:
         """Plan a path and return smoothed waypoints in world coords, or None."""
         g = self.grid
@@ -443,8 +502,9 @@ class PathPlanner:
             c = came_from[c]
         path_grid.reverse()
 
-        # --- line-of-sight smoothing ---
-        return self._los_simplify(path_grid, blocked)
+        # --- line-of-sight smoothing + densification ---
+        coarse = self._los_simplify(path_grid, blocked)
+        return self._densify_world_path(coarse, step_m=dense_step_m)
 
     # -- line-of-sight path smoothing ----------------------------------------
 
@@ -470,6 +530,28 @@ class PathPlanner:
             i = j
 
         return [self.grid.g2w(*p) for p in result]
+
+    @staticmethod
+    def _densify_world_path(
+        path: List[Tuple[float, float]],
+        step_m: float,
+    ) -> List[Tuple[float, float]]:
+        """Insert intermediate points so the default path has many waypoints."""
+        if len(path) <= 1 or step_m <= 0.0:
+            return path
+
+        dense = [path[0]]
+        for i in range(len(path) - 1):
+            x0, y0 = path[i]
+            x1, y1 = path[i + 1]
+            seg = math.hypot(x1 - x0, y1 - y0)
+            if seg < 1e-6:
+                continue
+            steps = max(int(math.ceil(seg / step_m)), 1)
+            for k in range(1, steps + 1):
+                t = k / steps
+                dense.append((x0 + t * (x1 - x0), y0 + t * (y1 - y0)))
+        return dense
 
     @staticmethod
     def _los_clear(
@@ -554,6 +636,9 @@ class SlamController:
         self.MAP_INTERVAL: int = 5       # ~10 Hz
         self.FRONTIER_INTERVAL: int = 50  # ~1 Hz
         self.PLAN_INTERVAL: int = 50      # ~1 Hz
+        self.FRONTIER_CANDIDATES: int = 8
+        self.FRONTIER_STRATEGY: str = "least_explored"
+        self.PATH_DENSE_STEP_M: float = 0.20
 
         # navigation tuning
         self.WP_REACH: float = 0.3       # waypoint reached radius (m)
@@ -652,7 +737,12 @@ class SlamController:
             self._no_target_since = step_index
             self._random_heading = None
         elif (step_index - self._last_frontier) >= self.FRONTIER_INTERVAL:
-            targets = self.explorer.find_targets(rx, ry, n=5)
+            targets = self.explorer.find_targets(
+                rx,
+                ry,
+                n=self.FRONTIER_CANDIDATES,
+                strategy=self.FRONTIER_STRATEGY,
+            )
             # Filter out frontiers within 1.5 m of visited objects
             if self._exclusion_zones and targets:
                 filtered = [
@@ -667,26 +757,43 @@ class SlamController:
                 self._no_target_since = step_index
                 self._random_heading = None
             else:
-                # No frontier found — anti-stuck: pick a random direction
-                # and create a synthetic target 3m away
-                if (self._random_heading is None
-                        or step_index - self._no_target_since > self._STUCK_STEPS):
-                    import random as _rnd
-                    self._random_heading = _rnd.uniform(-math.pi, math.pi)
+                # No frontiers found: go to the least explored reachable area.
+                fallback_target = self.explorer.find_least_explored_target(rx, ry)
+                if fallback_target is not None:
+                    self.target = fallback_target
                     self._no_target_since = step_index
-                    print(f"[SLAM] No frontiers — random walk heading "
-                          f"{math.degrees(self._random_heading):.0f}°")
-                _rw_dist = 3.0
-                self.target = (
-                    rx + _rw_dist * math.cos(self._random_heading),
-                    ry + _rw_dist * math.sin(self._random_heading),
-                )
+                    self._random_heading = None
+                    print(
+                        "[SLAM] No frontiers — heading to least explored area "
+                        f"({fallback_target[0]:.2f}, {fallback_target[1]:.2f})"
+                    )
+                else:
+                    # Last-resort anti-stuck: random walk.
+                    if (self._random_heading is None
+                            or step_index - self._no_target_since > self._STUCK_STEPS):
+                        import random as _rnd
+                        self._random_heading = _rnd.uniform(-math.pi, math.pi)
+                        self._no_target_since = step_index
+                        print(f"[SLAM] No frontiers/unknown area — random heading "
+                              f"{math.degrees(self._random_heading):.0f}°")
+                    _rw_dist = 3.0
+                    self.target = (
+                        rx + _rw_dist * math.cos(self._random_heading),
+                        ry + _rw_dist * math.sin(self._random_heading),
+                    )
             self._last_frontier = step_index
             self._last_plan = -999  # force replan on new target
 
         # 4. plan path (throttled)
         if self.target is not None and (step_index - self._last_plan) >= self.PLAN_INTERVAL:
-            p = self.planner.plan(rx, ry, self.target[0], self.target[1], inflate_r=self.INFLATE_R)
+            p = self.planner.plan(
+                rx,
+                ry,
+                self.target[0],
+                self.target[1],
+                inflate_r=self.INFLATE_R,
+                dense_step_m=self.PATH_DENSE_STEP_M,
+            )
             if p and len(p) > 1:
                 self.path = p
                 self.path_idx = 1  # skip the start cell

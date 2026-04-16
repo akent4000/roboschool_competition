@@ -41,9 +41,13 @@ class CompetitionRunLogger:
 
         self.log_path = os.path.join(self.log_dir, f"log_seed_{self.seed}.txt")
         self.log_file = open(self.log_path, "w+")
+        self.events_path = os.path.join(self.log_dir, f"events_seed_{self.seed}.txt")
+        self.events_file = open(self.events_path, "w")
 
         print(f"[LOG] Saving log to: {self.log_path}")
+        print(f"[LOG] Saving events to: {self.events_path}")
         self._write_header()
+        self._write_events_header()
 
     def _write_header(self):
         sequence_of_objects = getattr(self.env, "SEQUENCE_OF_OBJECTS", None)
@@ -63,6 +67,11 @@ class CompetitionRunLogger:
         self.log_file.write("detected_objects = {}\n")
         self.log_file.write("\nt,x,y,yaw\n")
         self.log_file.flush()
+
+    def _write_events_header(self):
+        self.events_file.write(f"seed={self.seed}\n")
+        self.events_file.write("t,event,details\n")
+        self.events_file.flush()
 
     def log_pose(self, t, x, y, yaw):
         self.log_file.write(f"{t:.3f},{x:.4f},{y:.4f},{yaw:.4f}\n")
@@ -119,6 +128,18 @@ class CompetitionRunLogger:
         x, y, yaw = get_base_pose_xy_yaw(self.base_env)
         self.log_detected_object(object_id, t, x, y, yaw)
 
+    def log_event(self, t, event, **details):
+        if not event:
+            return
+        parts = []
+        for key in sorted(details.keys()):
+            parts.append(f"{key}={details[key]}")
+        payload = "; ".join(parts)
+        self.events_file.write(f"{float(t):.3f},{event},{payload}\n")
+        self.events_file.flush()
+
     def close(self):
         if getattr(self, "log_file", None) is not None and not self.log_file.closed:
             self.log_file.close()
+        if getattr(self, "events_file", None) is not None and not self.events_file.closed:
+            self.events_file.close()
