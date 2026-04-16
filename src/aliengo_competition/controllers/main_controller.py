@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import math
-
 import numpy as np
 
 from aliengo_competition.common.run_logger import CompetitionRunLogger
@@ -127,17 +125,99 @@ def run(
     # 2. USER CONTROL LOGIC START / END
 
     # ================= USER PARAMETERS START =================
-    # Настраивайте эти значения, чтобы менять поведение демо.
-    # Параметры, завязанные на время, пересчитываются через шаг симуляции, потому время в секундах работают в симуляции правильно
+    import math as _math
+    import os as _os
+    from aliengo_competition.controllers.slam import SlamController
+
     warmup_s = 0.4
-    ramp_s = 1.2
-    trajectory_period_s = 8.0
-    forward_speed_mean = 0.40
-    forward_speed_amp = 0.35
-    lateral_speed_amp = 0.22
-    yaw_rate_amp = 0.75
-    yaw_rate_damping = 0.55
-    ang_vel_scale = 0.25
+    slam = SlamController(control_dt=control_dt)
+
+    # Debug: save occupancy grid image every N seconds (0 = disabled)
+    map_save_interval_s = 10.0
+    last_map_save_t = 0.0
+
+    # --- YOLO detector ---
+    _yolo_model = None
+    _YOLO_MODEL_PATH = "runs/yolo_detector/train/weights/best.pt"
+    try:
+        if _os.path.isfile(_YOLO_MODEL_PATH):
+            from ultralytics import YOLO as _YOLO
+            _yolo_model = _YOLO(_YOLO_MODEL_PATH)
+            print(f"[Detector] YOLO loaded: {_YOLO_MODEL_PATH}")
+        else:
+            print(f"[Detector] No model at {_YOLO_MODEL_PATH} — detection disabled")
+    except Exception as _e:
+        print(f"[Detector] Could not load YOLO: {_e}")
+
+    # Camera intrinsics  (RGB 640×360 @ 70° HFOV,  Depth 848×480 @ 86° HFOV)
+    _RGB_W, _RGB_H = 640, 360
+    _RGB_FX = _RGB_W / (2.0 * _math.tan(_math.radians(35.0)))   # ≈ 457
+    _RGB_CX = _RGB_W / 2.0
+    _RGB_CY = _RGB_H / 2.0
+
+    _DEPTH_W, _DEPTH_H = 848, 480
+    _DEPTH_FX = _DEPTH_W / (2.0 * _math.tan(_math.radians(43.0)))  # ≈ 455
+    _DEPTH_FY = _DEPTH_FX
+    _DEPTH_CX = _DEPTH_W / 2.0
+    _DEPTH_CY = _DEPTH_H / 2.0
+
+    # Detection tuning
+    _DETECT_EVERY = 5        # run YOLO every N steps (~10 Hz)
+    _DETECT_CONF = 0.45      # confidence threshold
+    _CONFIRM_DIST_M = 0.55   # visit confirmed within this radius (m)
+    _CONFIRM_FRAMES = 3      # consecutive close detections needed
+    _DEPTH_PATCH = 15        # half-size of depth sampling window (px)
+
+    # Mutable state that persists across loop iterations
+    class _DS:
+        last_detect_step = -999
+        detections = []       # [(class_id, u_center, v_center, conf), ...]
+        queue_idx = 0         # current position in object_queue
+        target_world = None   # (wx, wy) estimated world pos of target
+        confirm_count = 0     # consecutive frames target seen within range
+        nav_active = False    # True while approaching a detected object
+    _ds = _DS()
+
+    def _run_yolo(rgb, step_idx):
+        """Run YOLO inference (throttled). Caches results in _ds.detections."""
+        if step_idx - _ds.last_detect_step < _DETECT_EVERY:
+            return _ds.detections
+        _ds.last_detect_step = step_idx
+        if _yolo_model is None or rgb is None:
+            _ds.detections = []
+            return _ds.detections
+        results = _yolo_model(rgb[..., ::-1], conf=_DETECT_CONF, verbose=False)
+        dets = []
+        for r in results:
+            for box in r.boxes:
+                cls_id = int(box.cls[0])
+                conf = float(box.conf[0])
+                x1, y1, x2, y2 = box.xyxy[0].tolist()
+                dets.append((cls_id, (x1 + x2) / 2.0, (y1 + y2) / 2.0, conf))
+        _ds.detections = dets
+        return dets
+
+    def _sample_depth_at(depth_img, u_rgb, v_rgb):
+        """Sample depth (m) at an RGB-image pixel by reprojecting into the depth image."""
+        if depth_img is None:
+            return None
+        # Map RGB pixel → depth pixel via shared ray direction
+        u_d = int(_DEPTH_CX + _DEPTH_FX * (u_rgb - _RGB_CX) / _RGB_FX)
+        v_d = int(_DEPTH_CY + _DEPTH_FY * (v_rgb - _RGB_CY) / _RGB_FX)
+        H, W = depth_img.shape
+        p = _DEPTH_PATCH
+        patch = depth_img[max(0, v_d - p):min(H, v_d + p),
+                          max(0, u_d - p):min(W, u_d + p)]
+        valid = patch[(patch > 0.15) & (patch < 4.0) & np.isfinite(patch)]
+        return float(np.median(valid)) if len(valid) > 0 else None
+
+    def _pixel_to_world(u_rgb, depth_z, ox, oy, ot):
+        """RGB pixel + z-depth + odometry → world (x, y)."""
+        x_r = depth_z                                      # forward in robot frame
+        y_r = -depth_z * (u_rgb - _RGB_CX) / _RGB_FX      # left-positive
+        c, s = _math.cos(ot), _math.sin(ot)
+        return (ox + x_r * c - y_r * s,
+                oy + x_r * s + y_r * c)
     # ================== USER PARAMETERS END ==================
 
     segment_start_t = 0.0
@@ -170,28 +250,8 @@ def run(
             elif (camera_state.rgb is None or camera_state.depth is None) and isinstance(camera_payload, CameraState):
                 camera_state = camera_payload
             camera_renderer.show(camera_state)
-            omega_z = state.imu.wz / ang_vel_scale
 
             # ================= USER CONTROL LOGIC START =================
-            # Это основной блок для логики участника.
-            # Здесь нужно читать измерения, принимать решение и формировать
-            # команды движения. Логирование найденного объекта тоже делается
-            # отсюда.
-            #
-            # Формат данных эквивалентен данных:
-            # - вход команды: vx, vy, wz
-            # - выход состояния: measured_vx, measured_vy, measured_wz
-            # - joint_states: joint_names, relative_dof_pos, dof_vel
-            # - imu: base_ang_vel, base_lin_acc
-            # - camera: camera_data["image"], camera_data["depth"]
-            # - порядок объектов: object_queue
-            #
-            # Ниже приведён обязательный шаблон. Участник должен:
-            # 1. реализовать get_found_object_id(...)
-            # 2. при обнаружении объекта вернуть его id
-            # 3. обязательно вызвать log_found_object(...)
-            #
-            # Если объект не найден, верните None.
             sim_t = state.sim_time_s
 
             joint_names = state.joints.name
@@ -207,18 +267,7 @@ def run(
                 "depth": camera_state.depth,
             }
 
-            # Обязательная обвязка для логирования найденного объекта.
-            # Использование:
-            # - get_found_object_id(...) должен вернуть id найденного объекта
-            #   или None, если объект не найден
-            # - log_found_object(...) записывает событие в судейский лог
-            # - этот шаблон нельзя удалять: участник обязан реализовать его
-            #   в своём решении
-            #
-            # Пример:
-            #     detected_object_id = get_found_object_id(...)
-            #     if detected_object_id is not None:
-            #         log_found_object(detected_object_id)
+            # --- Обязательный шаблон логирования объектов ---
             def log_found_object(object_id: int) -> None:
                 """ОБЯЗАТЕЛЬНО: вызывайте при обнаружении целевого объекта."""
                 logger.log_detected_object_at_time(int(object_id), float(sim_t))
@@ -228,7 +277,56 @@ def run(
                 current_camera_data,
                 current_object_queue,
             ):
-                """ОБЯЗАТЕЛЬНО: замените заглушку своей логикой и возвращайте id объекта или None."""
+                """Detect current target via YOLO, estimate 3D pose, confirm visit."""
+                if not current_object_queue or _ds.queue_idx >= len(current_object_queue):
+                    return None
+
+                target_cls = current_object_queue[_ds.queue_idx]
+                rgb = current_camera_data.get("image") if current_camera_data else None
+                depth = current_camera_data.get("depth") if current_camera_data else None
+
+                dets = _run_yolo(rgb, step_index)
+
+                # Pick highest-confidence detection of the target class
+                best, best_conf = None, 0.0
+                for det in dets:
+                    if det[0] == target_cls and det[3] > best_conf:
+                        best, best_conf = det, det[3]
+
+                if best is None:
+                    _ds.confirm_count = max(0, _ds.confirm_count - 1)
+                    if _ds.confirm_count == 0:
+                        _ds.target_world = None
+                        _ds.nav_active = False
+                    return None
+
+                _, uc, vc, _ = best
+                d_m = _sample_depth_at(depth, uc, vc)
+                if d_m is None:
+                    return None
+
+                rx, ry, rt = slam.odom.pose
+                wx, wy = _pixel_to_world(uc, d_m, rx, ry, rt)
+                _ds.target_world = (wx, wy)
+                _ds.nav_active = True
+
+                dist = _math.hypot(wx - rx, wy - ry)
+                if dist < _CONFIRM_DIST_M:
+                    _ds.confirm_count += 1
+                    if _ds.confirm_count >= _CONFIRM_FRAMES:
+                        confirmed_id = target_cls
+                        _ds.queue_idx += 1
+                        _ds.confirm_count = 0
+                        _ds.target_world = None
+                        _ds.nav_active = False
+                        print(
+                            f"[Detector] CONFIRMED object {confirmed_id} "
+                            f"({_ds.queue_idx}/{len(current_object_queue)})"
+                        )
+                        return confirmed_id
+                else:
+                    _ds.confirm_count = max(0, _ds.confirm_count - 1)
+
                 return None
 
             detected_object_id = get_found_object_id(
@@ -239,21 +337,38 @@ def run(
             if detected_object_id is not None:
                 log_found_object(detected_object_id)
 
+            # --- SLAM-навигация ---
             local_t = max(sim_t - segment_start_t, 0.0)
+
+            # Reset SLAM odometry after a fall (local_t near zero = just reset)
+            if local_t < control_dt * 2:
+                slam.reset_pose()
+                _ds.confirm_count = 0
+                _ds.target_world = None
+                _ds.nav_active = False
+
+            # Direct SLAM toward detected object or let it explore frontiers
+            if _ds.nav_active and _ds.target_world is not None:
+                slam.set_navigation_target(*_ds.target_world)
+            else:
+                slam.clear_navigation_target()
+
+            # Always feed sensor data to SLAM (builds map even during warmup)
+            vx_cmd, vy_cmd, vw_cmd = slam.update(step_index, state, camera_data)
+
             if local_t < warmup_s:
                 vx = 0.0
                 vy = 0.0
                 vw = 0.0
             else:
-                motion_t = local_t - warmup_s
-                phase = 2.0 * math.pi * motion_t / max(trajectory_period_s, control_dt)
-                ramp = min(motion_t / max(ramp_s, control_dt), 1.0)
+                vx = vx_cmd
+                vy = vy_cmd
+                vw = vw_cmd
 
-                vx = ramp * (forward_speed_mean + forward_speed_amp * math.cos(phase))
-                vy = ramp * (lateral_speed_amp * math.sin(2.0 * phase))
-                yaw_ff = yaw_rate_amp * math.sin(phase + math.pi / 4.0)
-                vw = ramp * (yaw_ff - yaw_rate_damping * state.imu.wz / ang_vel_scale)
-                vw = max(min(vw, 1.0), -1.0)
+            # Debug: save occupancy grid snapshot periodically
+            if map_save_interval_s > 0 and sim_t - last_map_save_t >= map_save_interval_s:
+                slam.save_map_image(f"slam_map_{int(sim_t):04d}.png")
+                last_map_save_t = sim_t
             # ================== USER CONTROL LOGIC END ==================
 
             robot.set_speed(vx, vy, vw)

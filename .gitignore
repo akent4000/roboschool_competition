@@ -1,13 +1,24 @@
-.git
+# Python
 __pycache__/
 *.pyc
-.pytest_cache/
-.mypy_cache/
-logs/
-tmp/
+*.egg-info/
+
+# Build artifacts
+ros2_isaac_bridge/ros2_ws/build/
+ros2_isaac_bridge/ros2_ws/install/
+ros2_isaac_bridge/ros2_ws/log/
+
+# Data & models
+datasets/
 models/*
 !models/.gitkeep
-<<<<<<< Updated upstream
+logs/
+tmp/
+
+# Misc
+*.deb*
+
+# IDE / tools
 .codex
-=======
->>>>>>> Stashed changes
+.pytest_cache/
+.mypy_cache/
