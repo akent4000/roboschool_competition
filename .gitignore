@@ -22,3 +22,6 @@ tmp/
 .codex
 .pytest_cache/
 .mypy_cache/
+yolo_dataset.zip
+yolov8n.pt
+slam_map_*

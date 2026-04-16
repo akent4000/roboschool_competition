@@ -26,72 +26,6 @@ def _infer_control_dt(robot: AliengoRobotInterface, fallback_dt: float = 0.02) -
     return float(fallback_dt)
 
 
-class _CameraRenderer:
-    def __init__(self, enabled: bool, depth_max_m: float):
-        self.enabled = bool(enabled)
-        self.depth_max_m = max(float(depth_max_m), 0.1)
-        self._window_name = "Front Camera (Intel RealSense D435-like)"
-        self._cv2 = None
-        self._active = False
-        if not self.enabled:
-            return
-        try:
-            import cv2
-        except Exception as exc:
-            print(f"Отрисовка камеры отключена: не удалось импортировать cv2 ({exc})")
-            self.enabled = False
-            return
-        self._cv2 = cv2
-        self._cv2.namedWindow(self._window_name, self._cv2.WINDOW_NORMAL)
-        self._active = True
-
-    def show(self, camera: CameraState) -> None:
-        if not self._active or not isinstance(camera, CameraState):
-            return
-        image = camera.rgb
-        depth = camera.depth
-        if image is None or depth is None:
-            return
-
-        rgb = np.asarray(image)
-        depth_m = np.asarray(depth, dtype=np.float32)
-        if rgb.ndim != 3 or rgb.shape[2] < 3 or depth_m.ndim != 2:
-            return
-        if rgb.dtype != np.uint8:
-            rgb = np.clip(rgb, 0, 255).astype(np.uint8)
-        rgb = rgb[..., :3]
-        depth_m = np.nan_to_num(depth_m, nan=0.0, posinf=self.depth_max_m, neginf=0.0)
-        depth_m = np.clip(depth_m, 0.0, self.depth_max_m)
-        depth_u8 = (depth_m * (255.0 / self.depth_max_m)).astype(np.uint8)
-
-        cv2 = self._cv2
-        depth_color = cv2.applyColorMap(depth_u8, cv2.COLORMAP_TURBO)
-        depth_color = cv2.resize(depth_color, (rgb.shape[1], rgb.shape[0]), interpolation=cv2.INTER_NEAREST)
-        rgb_bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-        view = np.concatenate((rgb_bgr, depth_color), axis=1)
-
-        cv2.putText(view, "RGB", (10, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
-        cv2.putText(
-            view,
-            f"Depth 0..{self.depth_max_m:.1f}m",
-            (rgb.shape[1] + 10, 26),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            (255, 255, 255),
-            2,
-            cv2.LINE_AA,
-        )
-        cv2.imshow(self._window_name, view)
-        key = cv2.waitKey(1) & 0xFF
-        if key in (27, ord("q")):
-            self.close()
-
-    def close(self) -> None:
-        if not self._active or self._cv2 is None:
-            return
-        self._cv2.destroyWindow(self._window_name)
-        self._active = False
-
 
 def run(
     robot: AliengoRobotInterface,
@@ -106,7 +40,6 @@ def run(
         raise ValueError("Интерфейс робота должен предоставлять 'env' для обязательного логирования.")
 
     logger = CompetitionRunLogger(env=env, seed=int(seed))
-    camera_renderer = _CameraRenderer(enabled=render_camera, depth_max_m=camera_depth_max_m)
     control_dt = _infer_control_dt(robot, fallback_dt=0.02)
     requested_steps = max(int(steps), 1)
     nominal_dt = 0.02
@@ -116,9 +49,12 @@ def run(
         f"[Контроллер] dt={control_dt:.4f}с, requested_steps={requested_steps}, "
         f"effective_steps={total_steps}"
     )
-    object_queue = list(getattr(env, "SEQUENCE_OF_OBJECTS", []))
-    print(f"[Контроллер] отрисовка_камеры={'включена' if camera_renderer.enabled else 'выключена'}")
-    print(f"[Контроллер] object_queue={object_queue}")
+    _raw_queue = list(getattr(env, "SEQUENCE_OF_OBJECTS", []))
+    # SEQUENCE_OF_OBJECTS returns [(id, "name"), ...] — extract just the int IDs
+    object_queue = [item[0] if isinstance(item, (tuple, list)) else int(item)
+                    for item in _raw_queue]
+    print(f"[Контроллер] отрисовка_камеры={'включена' if render_camera else 'выключена'}")
+    print(f"[Контроллер] object_queue={object_queue} (raw={_raw_queue})")
 
     # Редактируемые пользователем блоки в этом файле:
     # 1. USER PARAMETERS START / END
@@ -128,9 +64,15 @@ def run(
     import math as _math
     import os as _os
     from aliengo_competition.controllers.slam import SlamController
+    from aliengo_competition.controllers.visualizer import DashboardVisualizer
 
     warmup_s = 0.4
     slam = SlamController(control_dt=control_dt)
+    dashboard = DashboardVisualizer(
+        enabled=render_camera,
+        depth_max_m=camera_depth_max_m,
+    )
+    _VIS_EVERY = 3  # render dashboard every N steps (~17 Hz)
 
     # Debug: save occupancy grid image every N seconds (0 = disabled)
     map_save_interval_s = 10.0
@@ -138,12 +80,14 @@ def run(
 
     # --- YOLO detector ---
     _yolo_model = None
-    _YOLO_MODEL_PATH = "runs/yolo_detector/train/weights/best.pt"
+    _YOLO_MODEL_PATH = "runs/yolo_detector/train/weights/best1.pt"
     try:
         if _os.path.isfile(_YOLO_MODEL_PATH):
             from ultralytics import YOLO as _YOLO
             _yolo_model = _YOLO(_YOLO_MODEL_PATH)
+            _model_names = getattr(_yolo_model, "names", {})
             print(f"[Detector] YOLO loaded: {_YOLO_MODEL_PATH}")
+            print(f"[Detector] Model class names: {_model_names}")
         else:
             print(f"[Detector] No model at {_YOLO_MODEL_PATH} — detection disabled")
     except Exception as _e:
@@ -168,6 +112,10 @@ def run(
     _CONFIRM_FRAMES = 3      # consecutive close detections needed
     _DEPTH_PATCH = 15        # half-size of depth sampling window (px)
 
+    # Post-confirmation: back up for this many seconds after visiting an object
+    _BACKUP_DURATION_S = 1.5
+    _BACKUP_VX = -0.25
+
     # Mutable state that persists across loop iterations
     class _DS:
         last_detect_step = -999
@@ -176,10 +124,14 @@ def run(
         target_world = None   # (wx, wy) estimated world pos of target
         confirm_count = 0     # consecutive frames target seen within range
         nav_active = False    # True while approaching a detected object
+        backup_until_t = 0.0  # sim_t until which the robot backs away
     _ds = _DS()
 
     def _run_yolo(rgb, step_idx):
-        """Run YOLO inference (throttled). Caches results in _ds.detections."""
+        """Run YOLO inference (throttled). Caches results in _ds.detections.
+
+        Each detection: (cls_id, u_center, v_center, conf, box_w, box_h)
+        """
         if step_idx - _ds.last_detect_step < _DETECT_EVERY:
             return _ds.detections
         _ds.last_detect_step = step_idx
@@ -193,8 +145,21 @@ def run(
                 cls_id = int(box.cls[0])
                 conf = float(box.conf[0])
                 x1, y1, x2, y2 = box.xyxy[0].tolist()
-                dets.append((cls_id, (x1 + x2) / 2.0, (y1 + y2) / 2.0, conf))
+                dets.append((
+                    cls_id,
+                    (x1 + x2) / 2.0,
+                    (y1 + y2) / 2.0,
+                    conf,
+                    x2 - x1,  # box width
+                    y2 - y1,  # box height
+                ))
         _ds.detections = dets
+        if dets:
+            _names = {0: "backpack", 1: "bottle", 2: "chair", 3: "cup", 4: "laptop"}
+            _summary = ", ".join(
+                f"{_names.get(d[0], '?')}({d[3]:.2f})" for d in dets
+            )
+            print(f"[YOLO] step={step_idx}: {_summary}")
         return dets
 
     def _sample_depth_at(depth_img, u_rgb, v_rgb):
@@ -249,7 +214,6 @@ def run(
                 )
             elif (camera_state.rgb is None or camera_state.depth is None) and isinstance(camera_payload, CameraState):
                 camera_state = camera_payload
-            camera_renderer.show(camera_state)
 
             # ================= USER CONTROL LOGIC START =================
             sim_t = state.sim_time_s
@@ -300,7 +264,7 @@ def run(
                         _ds.nav_active = False
                     return None
 
-                _, uc, vc, _ = best
+                _, uc, vc, _, _, _ = best
                 d_m = _sample_depth_at(depth, uc, vc)
                 if d_m is None:
                     return None
@@ -319,6 +283,7 @@ def run(
                         _ds.confirm_count = 0
                         _ds.target_world = None
                         _ds.nav_active = False
+                        _ds.backup_until_t = sim_t + _BACKUP_DURATION_S
                         print(
                             f"[Detector] CONFIRMED object {confirmed_id} "
                             f"({_ds.queue_idx}/{len(current_object_queue)})"
@@ -336,6 +301,10 @@ def run(
             )
             if detected_object_id is not None:
                 log_found_object(detected_object_id)
+                _obj_name = {0: "backpack", 1: "bottle", 2: "chair",
+                             3: "cup", 4: "laptop"}.get(detected_object_id, "?")
+                print(f"[LOG] Object {detected_object_id} ({_obj_name}) "
+                      f"visited at t={sim_t:.2f}s")
 
             # --- SLAM-навигация ---
             local_t = max(sim_t - segment_start_t, 0.0)
@@ -360,10 +329,36 @@ def run(
                 vx = 0.0
                 vy = 0.0
                 vw = 0.0
+            elif sim_t < _ds.backup_until_t:
+                # Back away after confirming an object visit
+                vx = _BACKUP_VX
+                vy = 0.0
+                vw = 0.0
             else:
                 vx = vx_cmd
                 vy = vy_cmd
                 vw = vw_cmd
+
+            # --- Dashboard visualization (throttled) ---
+            if step_index % _VIS_EVERY == 0:
+                _cur_target_cls = None
+                if object_queue and _ds.queue_idx < len(object_queue):
+                    _cur_target_cls = object_queue[_ds.queue_idx]
+                dashboard.update(
+                    rgb=camera_data.get("image") if camera_data else None,
+                    depth=camera_data.get("depth") if camera_data else None,
+                    detections=_ds.detections,
+                    target_cls=_cur_target_cls,
+                    slam=slam,
+                    vx_cmd=vx,
+                    vy_cmd=vy,
+                    wz_cmd=vw,
+                    queue=object_queue,
+                    queue_idx=_ds.queue_idx,
+                    sim_t=sim_t,
+                    confirm_count=_ds.confirm_count,
+                    confirm_needed=_CONFIRM_FRAMES,
+                )
 
             # Debug: save occupancy grid snapshot periodically
             if map_save_interval_s > 0 and sim_t - last_map_save_t >= map_save_interval_s:
@@ -384,5 +379,5 @@ def run(
                 continue
     finally:
         logger.close()
-        camera_renderer.close()
+        dashboard.close()
         robot.stop()

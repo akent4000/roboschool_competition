@@ -37,6 +37,7 @@ from __future__ import annotations
 import argparse
 import math
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -410,9 +411,26 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
 
     grand_total = 0
-    for seed in args.seeds:
+
+    if len(args.seeds) > 1:
+        # Isaac Gym / PhysX can only be initialised once per process.
+        # Spawn a child process for each seed to work around this.
+        for seed in args.seeds:
+            cmd = [
+                sys.executable, __file__,
+                "--seeds", str(seed),
+                "--output_dir", str(out),
+                "--settle", str(args.settle),
+            ]
+            if args.yolo:
+                cmd.append("--yolo")
+            result = subprocess.run(cmd)
+            if result.returncode != 0:
+                print(f"[ERROR] seed={seed} exited with code {result.returncode}")
+                sys.exit(result.returncode)
+    else:
         counts = collect_for_seed(
-            seed, out, settle_steps=args.settle, yolo=args.yolo,
+            args.seeds[0], out, settle_steps=args.settle, yolo=args.yolo,
         )
         grand_total += sum(counts.values())
 
@@ -433,19 +451,23 @@ def main():
         )
         print(f"\nYOLO data.yaml → {data_yaml.resolve()}")
 
+    # ── Final summary (count from disk so it works for subprocess runs) ─
     print(f"\n{'=' * 60}")
-    print(f"Done — {grand_total} frames total  →  {out.resolve()}")
     if args.yolo:
         img_count = len(list((out / "images" / "train").glob("*.png")))
         lbl_count = len(list((out / "labels" / "train").glob("*.txt")))
+        print(f"Done — {img_count} frames total  →  {out.resolve()}")
         print(f"  images/train: {img_count} images")
         print(f"  labels/train: {lbl_count} labels")
     else:
+        total_on_disk = 0
         print("Class breakdown:")
         for d in sorted(out.iterdir()):
             if d.is_dir():
                 n = len(list(d.glob("*.png")))
+                total_on_disk += n
                 print(f"  {d.name:12s} {n:>5d} images")
+        print(f"Done — {total_on_disk} frames total  →  {out.resolve()}")
 
 
 if __name__ == "__main__":

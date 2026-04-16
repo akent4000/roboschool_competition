@@ -7,7 +7,7 @@ Prerequisites:
 
 Usage:
     # Basic (after collect_dataset.py --yolo finishes):
-    python scripts/train_yolo.py --data datasets/yolo_objects/data.yaml
+    /
 
     # With custom parameters:
     python scripts/train_yolo.py \

@@ -11,6 +11,7 @@ Components:
 
 from __future__ import annotations
 
+import heapq
 import math
 from collections import deque
 from typing import List, Optional, Tuple
@@ -300,13 +301,20 @@ class FrontierExplorer:
 
 
 # ---------------------------------------------------------------------------
-# Path Planner (BFS)
+# Path Planner (A* with turn penalty + line-of-sight smoothing)
 # ---------------------------------------------------------------------------
 
 class PathPlanner:
-    """BFS shortest-path planner on the inflated occupancy grid."""
+    """A* path planner with turn penalty and line-of-sight path smoothing."""
 
     MAX_ITER = 200_000
+    LAMBDA_TURN = 0.3   # turn penalty weight (radians → grid-cost units)
+
+    _NEIGHBORS = (
+        (-1, 0), (1, 0), (0, -1), (0, 1),
+        (-1, -1), (1, -1), (-1, 1), (1, 1),
+    )
+    _SQRT2 = math.sqrt(2.0)
 
     def __init__(self, grid: OccupancyGrid) -> None:
         self.grid = grid
@@ -319,7 +327,7 @@ class PathPlanner:
         gy: float,
         inflate_r: int = 4,
     ) -> Optional[List[Tuple[float, float]]]:
-        """Plan a path and return simplified waypoints in world coords, or None."""
+        """Plan a path and return smoothed waypoints in world coords, or None."""
         g = self.grid
         start = g.w2g(sx, sy)
         goal = g.w2g(gx, gy)
@@ -341,35 +349,61 @@ class PathPlanner:
                 return None
             start = new_start
 
+        # --- A* search with 8-connectivity and turn penalty ---
+        def h(a: Tuple[int, int]) -> float:
+            return math.hypot(a[0] - goal[0], a[1] - goal[1])
+
+        # heap entries: (f_cost, g_cost, node)
+        open_heap = [(h(start), 0.0, start)]  # type: list
+        g_cost = {start: 0.0}    # type: dict
         came_from = {start: None}  # type: dict
-        q = deque([start])  # type: deque
+        in_dir = {}  # type: dict  # node → (dx, dy) incoming direction
+
         found = False
         iters = 0
 
-        while q and iters < self.MAX_ITER:
-            cur = q.popleft()
+        while open_heap and iters < self.MAX_ITER:
+            f, gc, cur = heapq.heappop(open_heap)
             iters += 1
+
             if cur == goal:
                 found = True
                 break
-            for ddx, ddy in (
-                (-1, 0), (1, 0), (0, -1), (0, 1),
-                (-1, -1), (1, -1), (-1, 1), (1, 1),
-            ):
+
+            if gc > g_cost.get(cur, float("inf")):
+                continue  # stale entry
+
+            cur_dir = in_dir.get(cur)  # None for the start node
+
+            for ddx, ddy in self._NEIGHBORS:
                 nb = (cur[0] + ddx, cur[1] + ddy)
-                if nb in came_from:
+                if not g.in_bounds(*nb) or blocked[nb[1], nb[0]]:
                     continue
-                if not g.in_bounds(*nb):
-                    continue
-                if blocked[nb[1], nb[0]]:
-                    continue
-                came_from[nb] = cur
-                q.append(nb)
+
+                step_dist = self._SQRT2 if (ddx != 0 and ddy != 0) else 1.0
+
+                # turn penalty: angle change between incoming and outgoing
+                turn_cost = 0.0
+                if cur_dir is not None:
+                    a_in = math.atan2(cur_dir[1], cur_dir[0])
+                    a_out = math.atan2(ddy, ddx)
+                    delta = abs(math.atan2(
+                        math.sin(a_out - a_in), math.cos(a_out - a_in)
+                    ))
+                    turn_cost = self.LAMBDA_TURN * delta
+
+                new_g = gc + step_dist + turn_cost
+
+                if new_g < g_cost.get(nb, float("inf")):
+                    g_cost[nb] = new_g
+                    came_from[nb] = cur
+                    in_dir[nb] = (ddx, ddy)
+                    heapq.heappush(open_heap, (new_g + h(nb), new_g, nb))
 
         if not found:
             return None
 
-        # reconstruct
+        # --- reconstruct grid path ---
         path_grid = []  # type: List[Tuple[int, int]]
         c = goal  # type: Optional[Tuple[int, int]]
         while c is not None:
@@ -377,15 +411,54 @@ class PathPlanner:
             c = came_from[c]
         path_grid.reverse()
 
-        # simplify to ~20 waypoints
-        wp = []  # type: List[Tuple[float, float]]
-        step = max(len(path_grid) // 20, 1)
-        for i in range(0, len(path_grid), step):
-            wp.append(g.g2w(*path_grid[i]))
-        last = g.g2w(*goal)
-        if not wp or wp[-1] != last:
-            wp.append(last)
-        return wp
+        # --- line-of-sight smoothing ---
+        return self._los_simplify(path_grid, blocked)
+
+    # -- line-of-sight path smoothing ----------------------------------------
+
+    def _los_simplify(
+        self,
+        path: List[Tuple[int, int]],
+        blocked: np.ndarray,
+    ) -> List[Tuple[float, float]]:
+        """Remove redundant waypoints: keep only those where LOS is broken."""
+        if len(path) <= 2:
+            return [self.grid.g2w(*p) for p in path]
+
+        result = [path[0]]
+        i = 0
+        while i < len(path) - 1:
+            # find the furthest point still visible from path[i]
+            j = len(path) - 1
+            while j > i + 1:
+                if self._los_clear(path[i], path[j], blocked):
+                    break
+                j -= 1
+            result.append(path[j])
+            i = j
+
+        return [self.grid.g2w(*p) for p in result]
+
+    @staticmethod
+    def _los_clear(
+        p1: Tuple[int, int],
+        p2: Tuple[int, int],
+        blocked: np.ndarray,
+    ) -> bool:
+        """Return True if a straight line from p1 to p2 crosses no obstacle."""
+        dx = p2[0] - p1[0]
+        dy = p2[1] - p1[1]
+        steps = max(abs(dx), abs(dy), 1)
+        bh, bw = blocked.shape
+        for k in range(steps + 1):
+            t = k / steps
+            gx = int(round(p1[0] + t * dx))
+            gy = int(round(p1[1] + t * dy))
+            if gx < 0 or gx >= bw or gy < 0 or gy >= bh or blocked[gy, gx]:
+                return False
+        return True
+
+    # -- helpers -------------------------------------------------------------
 
     def _nearest_free(
         self,
@@ -457,6 +530,16 @@ class SlamController:
         self.OBS_STOP: float = 0.45      # stop if obstacle closer than this (m)
         self.OBS_SLOW: float = 0.80      # slow down zone (m)
 
+        # Pure Pursuit
+        self.LOOKAHEAD: float = 0.8      # look-ahead distance on path (m)
+
+        # Low-pass filter for angular velocity (reduces jitter)
+        self._prev_wz: float = 0.0
+        self.WZ_ALPHA: float = 0.3       # 0 = freeze, 1 = no filter
+
+        # Dead zone: skip yaw corrections smaller than this
+        self.YAW_DEADZONE: float = math.radians(4.0)  # ~4°
+
     # -- public API ----------------------------------------------------------
 
     def reset_pose(self) -> None:
@@ -468,6 +551,7 @@ class SlamController:
         self._explicit_target = None
         self._last_frontier = -999
         self._last_plan = -999
+        self._prev_wz = 0.0
 
     def set_navigation_target(self, wx: float, wy: float) -> None:
         """Override exploration with a specific world-coordinate goal."""
@@ -558,16 +642,26 @@ class SlamController:
         rt: float,
         depth: Optional[np.ndarray],
     ) -> Tuple[float, float, float]:
-        """Proportional controller + reactive obstacle avoidance."""
+        """Pure Pursuit controller + reactive obstacle avoidance.
+
+        Compared to the previous proportional controller this adds:
+        - lookahead-based waypoint selection (smoother arcs)
+        - curvature-based speed scaling (slow down on turns)
+        - yaw dead zone (skip tiny corrections)
+        - low-pass filter on angular velocity (remove jitter)
+        """
         front_clear, turn_dir, speed_scale = self._obstacle_check(depth)
 
         if not front_clear:
-            # obstacle too close — stop and turn away
-            return 0.0, 0.0, turn_dir * 0.6
+            # obstacle too close — back up while turning away
+            wz = turn_dir * 0.6
+            self._prev_wz = wz
+            return -0.15, 0.0, wz
 
-        wp = self._current_waypoint(rx, ry)
+        wp = self._pure_pursuit_target(rx, ry)
         if wp is None:
             # no target — spin slowly to discover space
+            self._prev_wz = 0.5
             return 0.0, 0.0, 0.5
 
         dx = wp[0] - rx
@@ -578,33 +672,63 @@ class SlamController:
             math.sin(target_angle - rt), math.cos(target_angle - rt)
         )
 
-        if abs(err) > self.TURN_THRESH:
+        # Dead zone: ignore tiny yaw errors
+        if abs(err) < self.YAW_DEADZONE:
+            err = 0.0
+
+        abs_err = abs(err)
+
+        if abs_err > self.TURN_THRESH:
             # large heading error — turn in place (crawl forward slightly)
             vx = self.MIN_VX
-            wz = max(min(err * 2.0, self.MAX_WZ), -self.MAX_WZ)
+            wz_raw = max(min(err * 2.0, self.MAX_WZ), -self.MAX_WZ)
         else:
-            speed = self.MAX_VX * speed_scale
+            # curvature-based speed: reduce vx proportionally to yaw error
+            curv_factor = 1.0 - 0.6 * (abs_err / self.TURN_THRESH) if self.TURN_THRESH > 0 else 1.0
+            speed = self.MAX_VX * speed_scale * curv_factor
             if dist < 0.5:
                 speed *= max(dist / 0.5, 0.25)
             vx = max(speed, self.MIN_VX)
-            wz = max(min(err * 1.5, self.MAX_WZ), -self.MAX_WZ)
+            wz_raw = max(min(err * 1.5, self.MAX_WZ), -self.MAX_WZ)
+
+        # Low-pass filter on angular velocity
+        wz = self.WZ_ALPHA * wz_raw + (1.0 - self.WZ_ALPHA) * self._prev_wz
+        self._prev_wz = wz
 
         return vx, 0.0, wz
 
-    def _current_waypoint(
+    def _pure_pursuit_target(
         self, rx: float, ry: float
     ) -> Optional[Tuple[float, float]]:
-        """Advance along the planned path and return the current waypoint."""
+        """Pure Pursuit: aim at a point *LOOKAHEAD* metres ahead on the path."""
         if not self.path or self.path_idx >= len(self.path):
             return self.target
 
-        wp = self.path[self.path_idx]
-        while math.hypot(wp[0] - rx, wp[1] - ry) < self.WP_REACH:
+        # advance past reached waypoints
+        while self.path_idx < len(self.path) - 1:
+            if math.hypot(self.path[self.path_idx][0] - rx,
+                           self.path[self.path_idx][1] - ry) >= self.WP_REACH:
+                break
             self.path_idx += 1
-            if self.path_idx >= len(self.path):
-                return self.target
-            wp = self.path[self.path_idx]
-        return wp
+
+        # walk the path to find the point at LOOKAHEAD distance
+        for i in range(self.path_idx, len(self.path)):
+            wp = self.path[i]
+            d = math.hypot(wp[0] - rx, wp[1] - ry)
+            if d >= self.LOOKAHEAD:
+                # interpolate between previous and this waypoint for a smooth arc
+                if i > self.path_idx:
+                    prev = self.path[i - 1]
+                    d_prev = math.hypot(prev[0] - rx, prev[1] - ry)
+                    if d_prev < self.LOOKAHEAD and d > d_prev:
+                        t = (self.LOOKAHEAD - d_prev) / (d - d_prev)
+                        t = max(0.0, min(1.0, t))
+                        return (prev[0] + t * (wp[0] - prev[0]),
+                                prev[1] + t * (wp[1] - prev[1]))
+                return wp
+
+        # entire remaining path is within lookahead — aim at last waypoint
+        return self.path[-1]
 
     def _obstacle_check(
         self, depth: Optional[np.ndarray]
