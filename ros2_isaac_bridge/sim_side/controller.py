@@ -10,12 +10,14 @@ import sys
 import math
 import os
 import json
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 
 from geometry_msgs.msg import Twist, TwistStamped
 from sensor_msgs.msg import Image, Imu, JointState
@@ -96,19 +98,34 @@ class NavigationController(Node):
         )
 
         self.vel_sub = self.create_subscription(
-            TwistStamped, "/aliengo/base_velocity", self._vel_cb, 10
+            TwistStamped,
+            "/aliengo/base_velocity",
+            self._vel_cb,
+            qos_profile_sensor_data,
         )
         self.joint_sub = self.create_subscription(
-            JointState, "/aliengo/joint_states", self._joint_cb, 10
+            JointState,
+            "/aliengo/joint_states",
+            self._joint_cb,
+            qos_profile_sensor_data,
         )
         self.imu_sub = self.create_subscription(
-            Imu, "/aliengo/imu", self._imu_cb, 10
+            Imu,
+            "/aliengo/imu",
+            self._imu_cb,
+            qos_profile_sensor_data,
         )
         self.rgb_sub = self.create_subscription(
-            Image, "/aliengo/camera/color/image_raw", self._rgb_cb, 10
+            Image,
+            "/aliengo/camera/color/image_raw",
+            self._rgb_cb,
+            qos_profile_sensor_data,
         )
         self.depth_sub = self.create_subscription(
-            Image, "/aliengo/camera/depth/image_raw", self._depth_cb, 10
+            Image,
+            "/aliengo/camera/depth/image_raw",
+            self._depth_cb,
+            qos_profile_sensor_data,
         )
         self.seq_sub = self.create_subscription(
             String, "/competition/object_sequence", self._seq_cb, 10
@@ -139,6 +156,10 @@ class NavigationController(Node):
         self.control_dt: float = 0.02
         self.warmup_s: float = 3.5
         self.step_count: int = 0
+        self.sim_t: float = 0.0
+        self._last_loop_wall_t: Optional[float] = None
+        self._vel_timeout_s: float = 0.25
+        self._last_stale_warn_t: float = -999.0
 
         # ======================== Camera intrinsics ========================
         # RGB 640×360 @ 70° HFOV
@@ -634,9 +655,32 @@ class NavigationController(Node):
         if self.vel_stamp is None:
             return
 
+        now_wall = time.monotonic()
+        if self._last_loop_wall_t is None:
+            loop_dt = self.control_dt
+        else:
+            loop_dt = now_wall - self._last_loop_wall_t
+            if loop_dt <= 0.0:
+                loop_dt = self.control_dt
+            elif loop_dt > 0.2:
+                loop_dt = 0.2
+        self._last_loop_wall_t = now_wall
+
         step_idx = self.step_count
-        sim_t = step_idx * self.control_dt
         self.step_count += 1
+        self.sim_t += loop_dt
+        sim_t = self.sim_t
+
+        now_ros_s = float(self.get_clock().now().nanoseconds) * 1e-9
+        vel_age = now_ros_s - self.vel_stamp
+        if vel_age < 0.0:
+            vel_age = 0.0
+        vel_fresh = vel_age <= self._vel_timeout_s
+        if not vel_fresh and (sim_t - self._last_stale_warn_t) >= 1.0:
+            self.get_logger().warn(
+                f"[ROS] Stale /aliengo/base_velocity: age={vel_age:.3f}s. Holding robot."
+            )
+            self._last_stale_warn_t = sim_t
 
         rgb = self.latest_rgb
         depth = self.latest_depth
@@ -730,11 +774,17 @@ class NavigationController(Node):
             self.passby_active = False
 
         # Feed SLAM with sensor data and get velocity command
-        state = _SimpleState(self.latest_vx, self.latest_vy, self.latest_wz, self.control_dt)
+        vx_meas = self.latest_vx if vel_fresh else 0.0
+        vy_meas = self.latest_vy if vel_fresh else 0.0
+        wz_meas = self.latest_wz if vel_fresh else 0.0
+        state = _SimpleState(vx_meas, vy_meas, wz_meas, loop_dt)
         vx_cmd, vy_cmd, vw_cmd = self.slam.update(step_idx, state, camera_data)
 
         # --- Motion mode selection ---
-        if self.queue_idx >= len(self.object_queue) and len(self.object_queue) > 0:
+        if not vel_fresh:
+            vx, vy, vw = 0.0, 0.0, 0.0
+            self.motion_mode = "stale_data_stop"
+        elif self.queue_idx >= len(self.object_queue) and len(self.object_queue) > 0:
             vx, vy, vw = 0.0, 0.0, 0.0
             self.motion_mode = "all_done_stop"
         elif sim_t < self.warmup_s:

@@ -86,29 +86,43 @@ class SimBridgeClient:
     # ---- Receive -----------------------------------------------------------
 
     def receive_cmd(self):
-        try:
-            data, _ = self.cmd_sock.recvfrom(4096)
-            msg = json.loads(data.decode("utf-8"))
-            self.latest_cmd["vx"] = float(msg.get("vx", 0.0))
-            self.latest_cmd["vy"] = float(msg.get("vy", 0.0))
-            self.latest_cmd["wz"] = float(msg.get("wz", 0.0))
-        except BlockingIOError:
-            pass
-        except Exception as e:
-            print(f"receive_cmd error: {e}")
+        while True:
+            try:
+                data, _ = self.cmd_sock.recvfrom(4096)
+            except BlockingIOError:
+                break
+            except Exception as e:
+                print(f"receive_cmd error: {e}")
+                break
+
+            try:
+                msg = json.loads(data.decode("utf-8"))
+                self.latest_cmd["vx"] = float(msg.get("vx", 0.0))
+                self.latest_cmd["vy"] = float(msg.get("vy", 0.0))
+                self.latest_cmd["wz"] = float(msg.get("wz", 0.0))
+            except Exception as e:
+                print(f"receive_cmd parse error: {e}")
 
         return self.latest_cmd.copy()
 
     def receive_detected_object(self):
-        try:
-            data, _ = self.detected_sock.recvfrom(4096)
-            msg = json.loads(data.decode("utf-8"))
-            return int(msg.get("object_id"))
-        except BlockingIOError:
-            pass
-        except Exception as e:
-            print(f"receive_detected_object error: {e}")
-        return None
+        latest_detected = None
+        while True:
+            try:
+                data, _ = self.detected_sock.recvfrom(4096)
+            except BlockingIOError:
+                break
+            except Exception as e:
+                print(f"receive_detected_object error: {e}")
+                break
+
+            try:
+                msg = json.loads(data.decode("utf-8"))
+                latest_detected = int(msg.get("object_id"))
+            except Exception as e:
+                print(f"receive_detected_object parse error: {e}")
+
+        return latest_detected
 
     # ---- Lightweight sends (stay on main thread) --------------------------
 

@@ -219,6 +219,8 @@ def main():
 
     LOOP_DT = 0.02  # target loop period (50 Hz)
     CAMERA_SEND_EVERY = 3  # send images every N steps (~17 Hz)
+    LOG_FLUSH_EVERY = 25
+    PRINT_EVERY = 25
 
     while True:
         loop_start = time.perf_counter()
@@ -255,7 +257,8 @@ def main():
         ).item()
 
         log_file.write(f"{t:.3f},{x:.4f},{y:.4f},{yaw:.4f}\n")
-        log_file.flush()
+        if i % LOG_FLUSH_EVERY == 0:
+            log_file.flush()
 
         detected_object_id = bridge.receive_detected_object()
         if detected_object_id is not None:
@@ -301,10 +304,11 @@ def main():
             lin_acc=base_lin_acc,
         )
 
-        print(
-            f"cmd={{'vx': {cmd['vx']:.3f}, 'vy': {cmd['vy']:.3f}, 'wz': {cmd['wz']:.3f}}} "
-            f"state={{'vx': {measured_vx:.3f}, 'vy': {measured_vy:.3f}, 'wz': {measured_wz:.3f}}}"
-        )
+        if i % PRINT_EVERY == 0:
+            print(
+                f"cmd={{'vx': {cmd['vx']:.3f}, 'vy': {cmd['vy']:.3f}, 'wz': {cmd['wz']:.3f}}} "
+                f"state={{'vx': {measured_vx:.3f}, 'vy': {measured_vy:.3f}, 'wz': {measured_wz:.3f}}}"
+            )
 
         # Sleep only the remaining time to maintain target loop rate
         elapsed = time.perf_counter() - loop_start
