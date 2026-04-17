@@ -38,7 +38,11 @@ ros2 launch ros2_bridge_pkg competition.launch.py
 ```bash
 docker/ctl.sh up
 docker/ctl.sh exec
+# Использовать порядок из окружения (по умолчанию):
 python ros2_isaac_bridge/sim_side/isaac_controller.py
+
+# Задать свой порядок:
+python ros2_isaac_bridge/sim_side/isaac_controller.py --objects 3 1 4 0 2
 ```
 
 **Вариант B** — локально (conda):

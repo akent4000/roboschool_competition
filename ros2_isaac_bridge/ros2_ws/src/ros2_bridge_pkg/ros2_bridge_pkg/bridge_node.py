@@ -210,7 +210,7 @@ class BridgeNode(Node):
         except Exception as e:
             self.get_logger().error(f"rgb receive error: {e}")
 
-        # --- Depth (TCP) ---
+        # --- Depth (TCP, uint16 millimetres → float32 metres) ---
         try:
             if self.depth_conn is None:
                 try:
@@ -228,13 +228,15 @@ class BridgeNode(Node):
                 h, w = struct.unpack("II", payload[:8])
                 depth_bytes = payload[8:]
 
-                expected_size = h * w * 4
+                # Sender transmits uint16 (2 bytes/pixel)
+                expected_size = h * w * 2
                 if len(depth_bytes) != expected_size:
                     raise ValueError(
                         f"depth payload size mismatch: got {len(depth_bytes)}, expected {expected_size}"
                     )
 
-                depth_image = np.frombuffer(depth_bytes, dtype=np.float32).reshape((h, w))
+                depth_mm = np.frombuffer(depth_bytes, dtype=np.uint16).reshape((h, w))
+                depth_image = depth_mm.astype(np.float32) / 1000.0
 
                 msg = Image()
                 msg.header.stamp = self.get_clock().now().to_msg()

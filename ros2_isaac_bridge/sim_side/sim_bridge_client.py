@@ -1,6 +1,7 @@
 import socket
 import json
 import time
+import threading
 import cv2
 import struct
 import numpy as np
@@ -55,6 +56,35 @@ class SimBridgeClient:
         self.imu_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.object_seq_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
+        # Background sender thread for heavy payloads (RGB + depth)
+        self._send_lock = threading.Lock()
+        self._pending_rgb = None      # latest RGB frame (numpy array)
+        self._pending_depth = None    # latest depth frame (numpy array)
+        self._sender_event = threading.Event()
+        self._sender_thread = threading.Thread(target=self._sender_loop, daemon=True)
+        self._sender_thread.start()
+
+    # ---- Background sender ------------------------------------------------
+
+    def _sender_loop(self):
+        """Drain pending RGB/depth in a background thread."""
+        while True:
+            self._sender_event.wait()
+            self._sender_event.clear()
+
+            with self._send_lock:
+                rgb = self._pending_rgb
+                depth = self._pending_depth
+                self._pending_rgb = None
+                self._pending_depth = None
+
+            if rgb is not None:
+                self._do_send_rgb(rgb)
+            if depth is not None:
+                self._do_send_depth(depth)
+
+    # ---- Receive -----------------------------------------------------------
+
     def receive_cmd(self):
         try:
             data, _ = self.cmd_sock.recvfrom(4096)
@@ -80,6 +110,8 @@ class SimBridgeClient:
             print(f"receive_detected_object error: {e}")
         return None
 
+    # ---- Lightweight sends (stay on main thread) --------------------------
+
     def send_state(self, vx, vy, wz):
         msg = {
             "vx": float(vx),
@@ -89,27 +121,6 @@ class SimBridgeClient:
         }
         data = json.dumps(msg).encode("utf-8")
         self.state_sock.sendto(data, (STATE_IP, STATE_PORT))
-
-    def send_rgb(self, rgb):
-        bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-
-        success, encoded = cv2.imencode(".jpg", bgr)
-        if not success:
-            print("send_rgb error: JPEG encoding failed")
-            return
-
-        data = encoded.tobytes()
-        self.rgb_sock.sendto(data, (RGB_IP, RGB_PORT))
-
-    # TCP
-    def send_depth(self, depth):
-        depth = np.asarray(depth, dtype=np.float32)
-
-        h, w = depth.shape[:2]
-        payload = struct.pack("II", h, w) + depth.tobytes()
-        packet = struct.pack("I", len(payload)) + payload
-
-        self.depth_sock.sendall(packet)
 
     def send_joint_states(self, names, position, velocity):
         msg = {
@@ -137,3 +148,42 @@ class SimBridgeClient:
     def send_object_sequence(self, sequence):
         data = json.dumps(sequence).encode("utf-8")
         self.object_seq_sock.sendto(data, (OBJECT_SEQ_IP, OBJECT_SEQ_PORT))
+
+    # ---- Heavy sends (queued for background thread) -----------------------
+
+    def send_rgb(self, rgb):
+        """Queue RGB frame for background sending (non-blocking)."""
+        with self._send_lock:
+            self._pending_rgb = rgb.copy()
+        self._sender_event.set()
+
+    def send_depth(self, depth):
+        """Queue depth frame for background sending (non-blocking)."""
+        with self._send_lock:
+            self._pending_depth = np.asarray(depth, dtype=np.float32).copy()
+        self._sender_event.set()
+
+    # ---- Actual network I/O (called from background thread) ---------------
+
+    def _do_send_rgb(self, rgb):
+        try:
+            bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+            success, encoded = cv2.imencode(".jpg", bgr)
+            if not success:
+                print("send_rgb error: JPEG encoding failed")
+                return
+            data = encoded.tobytes()
+            self.rgb_sock.sendto(data, (RGB_IP, RGB_PORT))
+        except Exception as e:
+            print(f"send_rgb error: {e}")
+
+    def _do_send_depth(self, depth):
+        """Send depth as uint16 millimetres (halves bandwidth vs float32)."""
+        try:
+            depth_mm = np.clip(depth * 1000.0, 0, 65535).astype(np.uint16)
+            h, w = depth_mm.shape[:2]
+            payload = struct.pack("II", h, w) + depth_mm.tobytes()
+            packet = struct.pack("I", len(payload)) + payload
+            self.depth_sock.sendall(packet)
+        except Exception as e:
+            print(f"send_depth error: {e}")

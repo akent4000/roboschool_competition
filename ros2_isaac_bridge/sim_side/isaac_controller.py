@@ -112,11 +112,16 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--headless", action="store_true", default=False)
     ap.add_argument("--seed", type=int, default=None)
+    ap.add_argument("--objects", type=int, nargs="+", default=None,
+                    help="Override object visit order, e.g. --objects 3 1 4 0 2")
     args = ap.parse_args()
     if args.seed is not None:
         seed = args.seed
     env, policy = load_env(label, headless=args.headless, seed=seed)
-    SEQUENCE_OF_OBJECTS = env.SEQUENCE_OF_OBJECTS
+    if args.objects is not None:
+        SEQUENCE_OF_OBJECTS = args.objects
+    else:
+        SEQUENCE_OF_OBJECTS = env.SEQUENCE_OF_OBJECTS
 
     obs = env.reset()
 
@@ -212,7 +217,12 @@ def main():
         log_file.truncate()
         log_file.flush()
 
+    LOOP_DT = 0.02  # target loop period (50 Hz)
+    CAMERA_SEND_EVERY = 3  # send images every N steps (~17 Hz)
+
     while True:
+        loop_start = time.perf_counter()
+
         cmd = bridge.receive_cmd()
 
         with torch.no_grad():
@@ -255,7 +265,14 @@ def main():
         if i % 50 == 0:
             bridge.send_object_sequence(SEQUENCE_OF_OBJECTS)
 
-        camera_data = env.get_front_camera_data(0)
+        # Send images at reduced rate (~17 Hz) to save bandwidth
+        if i % CAMERA_SEND_EVERY == 0:
+            camera_data = env.get_front_camera_data(0)
+            if camera_data is None:
+                print("camera_data is None")
+            else:
+                bridge.send_rgb(camera_data["image"])
+                bridge.send_depth(camera_data["depth"])
 
         measured_vx = env.base_lin_vel[0, 0].item()
         measured_vy = env.base_lin_vel[0, 1].item()
@@ -266,17 +283,6 @@ def main():
 
         relative_dof_pos = (env.dof_pos[0, :] - env.default_dof_pos[0, :]).detach().cpu().numpy()
         dof_vel = env.dof_vel[0, :].detach().cpu().numpy()
-
-        if camera_data is None:
-            print("camera_data is None")
-        else:
-            rgb = camera_data["image"]
-            depth = camera_data["depth"]
-
-            bridge.send_rgb(rgb)
-            bridge.send_depth(depth)
-
-            # print(f"rgb shape={rgb.shape}, depth shape={depth.shape}")
 
         bridge.send_state(
             vx=measured_vx,
@@ -300,7 +306,11 @@ def main():
             f"state={{'vx': {measured_vx:.3f}, 'vy': {measured_vy:.3f}, 'wz': {measured_wz:.3f}}}"
         )
 
-        time.sleep(0.02)
+        # Sleep only the remaining time to maintain target loop rate
+        elapsed = time.perf_counter() - loop_start
+        remaining = LOOP_DT - elapsed
+        if remaining > 0:
+            time.sleep(remaining)
 
 
 if __name__ == "__main__":

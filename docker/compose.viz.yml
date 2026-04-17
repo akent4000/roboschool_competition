@@ -11,7 +11,3 @@ services:
       - QT_X11_NO_MITSHM=1
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      - /usr/share/vulkan/icd.d:/usr/share/vulkan/icd.d:ro
-      - /etc/vulkan/icd.d:/etc/vulkan/icd.d:ro
-      - /usr/share/glvnd/egl_vendor.d:/usr/share/glvnd/egl_vendor.d:ro
-      - /etc/glvnd/egl_vendor.d:/etc/glvnd/egl_vendor.d:ro

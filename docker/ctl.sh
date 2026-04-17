@@ -6,17 +6,21 @@ COMPOSE_FILE="${SCRIPT_DIR}/compose.local.yml"
 COMPOSE_VIZ_FILE="${SCRIPT_DIR}/compose.viz.yml"
 COMPOSE_ROS2_FILE="${SCRIPT_DIR}/compose.ros2.yml"
 
+EXTRA_REQUIREMENTS="${SCRIPT_DIR}/requirements.extra.txt"
+
 usage() {
   cat <<'EOF'
 Usage:
-  docker/ctl.sh build   # build local docker layers and the competition image
-  docker/ctl.sh up      # build then start the competition container with visualization
-  docker/ctl.sh down    # stop and remove the competition container
-  docker/ctl.sh exec    # open a shell inside the running container
+  docker/ctl.sh build       # build local docker layers and the competition image
+  docker/ctl.sh up          # build then start the competition container with visualization
+  docker/ctl.sh down        # stop and remove the competition container
+  docker/ctl.sh exec        # open a shell inside the running container
+  docker/ctl.sh setup       # install extra Python deps (ultralytics etc.) inside sim container
   docker/ctl.sh ros2-build  # build the ROS 2 Jazzy layer (desktop-full + rqt + tools)
   docker/ctl.sh ros2-up     # start ROS 2 Jazzy container with X11 support
   docker/ctl.sh ros2-down   # stop and remove ROS 2 Jazzy container
   docker/ctl.sh ros2-exec   # open a shell inside the ROS 2 Jazzy container
+  docker/ctl.sh ros2-setup  # install extra Python deps inside ROS 2 container
 EOF
 }
 
@@ -89,6 +93,12 @@ case "${cmd}" in
     ensure_x11_access
     compose exec aliengo-competition bash
     ;;
+  setup)
+    echo "Installing extra dependencies in sim container..."
+    compose exec aliengo-competition \
+      python -m pip install --quiet -r /workspace/aliengo_competition/docker/requirements.extra.txt
+    echo "Done."
+    ;;
   ros2-build)
     retry_command 3 compose_ros2 build
     ;;
@@ -102,6 +112,13 @@ case "${cmd}" in
   ros2-exec)
     ensure_x11_access
     compose_ros2 exec ros2-jazzy bash
+    ;;
+  ros2-setup)
+    echo "Installing extra dependencies in ROS 2 container..."
+    compose_ros2 exec ros2-jazzy \
+      python3 -m pip install --quiet --no-cache-dir --break-system-packages \
+        -r /workspace/aliengo_competition/docker/requirements.extra.txt
+    echo "Done."
     ;;
   *)
     usage

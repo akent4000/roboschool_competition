@@ -8,16 +8,10 @@ services:
     volumes:
       - ..:/workspace/aliengo_competition
       - /tmp/.X11-unix:/tmp/.X11-unix:rw
-      - /usr/share/vulkan/icd.d:/usr/share/vulkan/icd.d:ro
-      - /etc/vulkan/icd.d:/etc/vulkan/icd.d:ro
-      - /usr/share/glvnd/egl_vendor.d:/usr/share/glvnd/egl_vendor.d:ro
-      - /etc/glvnd/egl_vendor.d:/etc/glvnd/egl_vendor.d:ro
 
     environment:
       - DISPLAY=${DISPLAY}
       - NVIDIA_DRIVER_CAPABILITIES=all,compute,utility,graphics
-      - NVIDIA_VISIBLE_DEVICES=all
-      - __GLX_VENDOR_LIBRARY_NAME=nvidia
       - QT_X11_NO_MITSHM=1
       - LIBGL_DRI3_DISABLE=1
       - ROS_DOMAIN_ID=${ROS_DOMAIN_ID:-0}
@@ -25,5 +19,6 @@ services:
     stdin_open: true
     tty: true
     network_mode: host
+    gpus: all
 
     command: tail -f /dev/null
