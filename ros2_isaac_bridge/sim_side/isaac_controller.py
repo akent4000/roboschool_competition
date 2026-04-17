@@ -227,6 +227,13 @@ def main():
 
         cmd = bridge.receive_cmd()
 
+        # Capture camera BEFORE step to preserve pre-reset frames
+        camera_frame = None
+        if i % CAMERA_SEND_EVERY == 0:
+            camera_frame = env.get_front_camera_data(0)
+            if camera_frame is None:
+                print("camera_data is None")
+
         with torch.no_grad():
             actions = policy(obs)
 
@@ -246,6 +253,21 @@ def main():
 
         t = i * env.dt
         i += 1
+
+        # Detect episode reset (robot fell or episode_length exceeded)
+        episode_done = done[0].item() if isinstance(done, torch.Tensor) else bool(done)
+        if episode_done:
+            print(f"\n[RESET] Episode ended at step {i}, t={t:.1f}s. Flushing pipeline...")
+            # Send the pre-reset camera frame so controller can process it
+            if camera_frame is not None:
+                bridge.send_rgb(camera_frame["image"])
+                bridge.send_depth(camera_frame["depth"])
+            bridge.send_state(vx=0.0, vy=0.0, wz=0.0)
+            log_file.write(f"{t:.3f},RESET\n")
+            log_file.flush()
+            # Give ROS2 controller time to process the last pre-reset data
+            time.sleep(0.15)
+            continue
 
         x = env.root_states[0, 0].item()
         y = env.root_states[0, 1].item()
@@ -268,14 +290,10 @@ def main():
         if i % 50 == 0:
             bridge.send_object_sequence(SEQUENCE_OF_OBJECTS)
 
-        # Send images at reduced rate (~17 Hz) to save bandwidth
-        if i % CAMERA_SEND_EVERY == 0:
-            camera_data = env.get_front_camera_data(0)
-            if camera_data is None:
-                print("camera_data is None")
-            else:
-                bridge.send_rgb(camera_data["image"])
-                bridge.send_depth(camera_data["depth"])
+        # Send pre-step camera frame (captured before env.step)
+        if camera_frame is not None:
+            bridge.send_rgb(camera_frame["image"])
+            bridge.send_depth(camera_frame["depth"])
 
         measured_vx = env.base_lin_vel[0, 0].item()
         measured_vy = env.base_lin_vel[0, 1].item()
