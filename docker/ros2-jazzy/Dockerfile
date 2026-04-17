@@ -10,6 +10,7 @@ RUN set -eux; \
         apt-get update && \
         apt-get install -y --no-install-recommends \
             python3-colcon-common-extensions \
+            python3-pip \
             python3-opencv \
             python3-numpy \
             ros-jazzy-rviz2 \
@@ -24,6 +25,9 @@ RUN set -eux; \
     test "${success}" = "1"; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*
+
+RUN python3 -m pip install --no-cache-dir --break-system-packages --ignore-installed setuptools \
+ && python3 -m pip install --no-cache-dir ultralytics --break-system-packages --ignore-installed
 
 RUN set -eux; \
     printf '%s\n' \

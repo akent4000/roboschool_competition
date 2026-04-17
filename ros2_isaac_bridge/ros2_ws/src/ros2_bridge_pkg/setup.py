@@ -10,6 +10,7 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        ('share/' + package_name + '/launch', ['launch/competition.launch.py']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -25,6 +26,8 @@ setup(
     entry_points={
         'console_scripts': [
             'bridge_node = ros2_bridge_pkg.bridge_node:main',
+            'controller_node = ros2_bridge_pkg.controller_node:main',
+            'dashboard_node = ros2_bridge_pkg.dashboard_node:main',
         ],
     },
 )

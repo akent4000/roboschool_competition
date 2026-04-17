@@ -1,12 +1,15 @@
 # Python
 __pycache__/
 *.pyc
+*.pyo
 *.egg-info/
+*.egg
+dist/
 
-# Build artifacts
-ros2_isaac_bridge/ros2_ws/build/
-ros2_isaac_bridge/ros2_ws/install/
-ros2_isaac_bridge/ros2_ws/log/
+# Colcon / ROS 2 build artifacts
+build/
+install/
+log/
 
 # Data & models
 datasets/
@@ -15,13 +18,18 @@ models/*
 logs/
 tmp/
 
+# YOLO / vision artifacts
+yolo_dataset.zip
+yolov8n.pt
+slam_map_*
+
 # Misc
 *.deb*
 
 # IDE / tools
 .codex
+.claude/
+.vscode/
+.idea/
 .pytest_cache/
 .mypy_cache/
-yolo_dataset.zip
-yolov8n.pt
-slam_map_*

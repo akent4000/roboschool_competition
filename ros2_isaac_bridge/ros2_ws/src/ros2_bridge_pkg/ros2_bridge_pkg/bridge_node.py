@@ -10,6 +10,7 @@ from rclpy.node import Node
 
 from geometry_msgs.msg import Twist, TwistStamped
 from sensor_msgs.msg import Image, JointState, Imu
+from std_msgs.msg import Int32, String
 
 
 CMD_IP = "127.0.0.1"
@@ -30,6 +31,13 @@ JOINT_STATE_PORT = 5009
 IMU_IP = "127.0.0.1"
 IMU_PORT = 5010
 
+DETECTED_IP = "127.0.0.1"
+DETECTED_PORT = 5011
+
+OBJECT_SEQ_IP = "127.0.0.1"
+OBJECT_SEQ_PORT = 5012
+
+
 class BridgeNode(Node):
     def __init__(self):
         super().__init__("bridge_node")
@@ -44,12 +52,7 @@ class BridgeNode(Node):
         self.rgb_sock.bind((RGB_IP, RGB_PORT))
         self.rgb_sock.setblocking(False)
 
-        # UDP
-        # self.depth_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # self.depth_sock.bind((DEPTH_IP, DEPTH_PORT))
-        # self.depth_sock.setblocking(False)
-
-        # TCP
+        # TCP for depth
         self.depth_server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.depth_server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.depth_server_sock.bind((DEPTH_IP, DEPTH_PORT))
@@ -66,6 +69,15 @@ class BridgeNode(Node):
         self.imu_sock.bind((IMU_IP, IMU_PORT))
         self.imu_sock.setblocking(False)
 
+        # detected_object: controller → bridge → isaac_controller (UDP send)
+        self.detected_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+        # object_sequence: isaac_controller → bridge → controller (UDP receive)
+        self.object_seq_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.object_seq_sock.bind((OBJECT_SEQ_IP, OBJECT_SEQ_PORT))
+        self.object_seq_sock.setblocking(False)
+
+        # --- Subscriptions ---
         self.cmd_sub = self.create_subscription(
             Twist,
             "/cmd_vel",
@@ -73,6 +85,14 @@ class BridgeNode(Node):
             10,
         )
 
+        self.detected_sub = self.create_subscription(
+            Int32,
+            "/competition/detected_object",
+            self.detected_callback,
+            10,
+        )
+
+        # --- Publishers ---
         self.vel_pub = self.create_publisher(
             TwistStamped,
             "/aliengo/base_velocity",
@@ -103,6 +123,12 @@ class BridgeNode(Node):
             10,
         )
 
+        self.object_seq_pub = self.create_publisher(
+            String,
+            "/competition/object_sequence",
+            10,
+        )
+
         self.timer = self.create_timer(0.05, self.timer_callback)
 
         self.get_logger().info("ROS bridge node started.")
@@ -116,7 +142,15 @@ class BridgeNode(Node):
 
         data = json.dumps(payload).encode("utf-8")
         self.cmd_sock.sendto(data, (CMD_IP, CMD_PORT))
-    
+
+    def detected_callback(self, msg: Int32):
+        payload = {
+            "object_id": int(msg.data),
+        }
+
+        data = json.dumps(payload).encode("utf-8")
+        self.detected_sock.sendto(data, (DETECTED_IP, DETECTED_PORT))
+
     def recv_exact(self, sock, size):
         chunks = []
         received = 0
@@ -129,6 +163,7 @@ class BridgeNode(Node):
         return b"".join(chunks)
 
     def timer_callback(self):
+        # --- base velocity ---
         try:
             data, _ = self.state_sock.recvfrom(4096)
             msg = json.loads(data.decode("utf-8"))
@@ -148,6 +183,7 @@ class BridgeNode(Node):
         except Exception as e:
             self.get_logger().error(f"state receive error: {e}")
 
+        # --- RGB ---
         try:
             data, _ = self.rgb_sock.recvfrom(65535)
 
@@ -174,62 +210,7 @@ class BridgeNode(Node):
         except Exception as e:
             self.get_logger().error(f"rgb receive error: {e}")
 
-        # UDP with PNG encoding
-        # try:
-        #     data, _ = self.depth_sock.recvfrom(65535)
-
-        #     np_arr = np.frombuffer(data, dtype=np.uint8)
-        #     depth_image = cv2.imdecode(np_arr, cv2.IMREAD_UNCHANGED)
-
-        #     if depth_image is not None:
-        #         msg = Image()
-        #         msg.header.stamp = self.get_clock().now().to_msg()
-        #         msg.header.frame_id = "front_camera_depth"
-        #         msg.height = depth_image.shape[0]
-        #         msg.width = depth_image.shape[1]
-        #         msg.encoding = "32FC1"
-        #         msg.is_bigendian = 0
-        #         msg.step = depth_image.shape[1] * 4
-        #         msg.data = depth_image.astype(np.float32).tobytes()
-
-        #         self.depth_pub.publish(msg)
-
-        # UDP without PNG encoding
-        # try:
-        #     data, _ = self.depth_sock.recvfrom(2000000)
-
-        #     if len(data) < 8:
-        #         raise ValueError("depth packet too small")
-
-        #     h, w = struct.unpack("II", data[:8])
-        #     depth_bytes = data[8:]
-
-        #     expected_size = h * w * 4
-        #     if len(depth_bytes) != expected_size:
-        #         raise ValueError(
-        #             f"depth payload size mismatch: got {len(depth_bytes)}, expected {expected_size}"
-        #         )
-
-        #     depth_image = np.frombuffer(depth_bytes, dtype=np.float32).reshape((h, w))
-
-        #     msg = Image()
-        #     msg.header.stamp = self.get_clock().now().to_msg()
-        #     msg.header.frame_id = "front_camera_depth"
-        #     msg.height = h
-        #     msg.width = w
-        #     msg.encoding = "32FC1"
-        #     msg.is_bigendian = 0
-        #     msg.step = w * 4
-        #     msg.data = depth_image.tobytes()
-
-        #     self.depth_pub.publish(msg)
-
-        # except BlockingIOError:
-        #     pass
-        # except Exception as e:
-        #     self.get_logger().error(f"depth receive error: {e}")
-
-        # TCP
+        # --- Depth (TCP) ---
         try:
             if self.depth_conn is None:
                 try:
@@ -278,6 +259,7 @@ class BridgeNode(Node):
                     pass
                 self.depth_conn = None
 
+        # --- Joint states ---
         try:
             data, _ = self.joint_state_sock.recvfrom(65535)
 
@@ -298,6 +280,7 @@ class BridgeNode(Node):
         except Exception as e:
             self.get_logger().error(f"joint_state receive error: {e}")
 
+        # --- IMU ---
         try:
             data, _ = self.imu_sock.recvfrom(4096)
 
@@ -321,6 +304,19 @@ class BridgeNode(Node):
             pass
         except Exception as e:
             self.get_logger().error(f"imu receive error: {e}")
+
+        # --- Object sequence (from isaac_controller) ---
+        try:
+            data, _ = self.object_seq_sock.recvfrom(4096)
+
+            out = String()
+            out.data = data.decode("utf-8")
+            self.object_seq_pub.publish(out)
+
+        except BlockingIOError:
+            pass
+        except Exception as e:
+            self.get_logger().error(f"object_seq receive error: {e}")
 
 
 def main(args=None):

@@ -90,9 +90,12 @@ def load_env(label, headless=False, seed=0):
     Cfg.env.front_camera_offset_xyz = [0.315, 0.0, 0.052]
     Cfg.env.front_camera_pitch_deg = -4.0
 
+    # Use CPU PhysX to reduce VRAM usage (policy still runs on GPU)
+    Cfg.sim.use_gpu_pipeline = False
+
     from aliengo_gym.envs.wrappers.history_wrapper import HistoryWrapper
 
-    env = VelocityTrackingEasyEnv(seed=seed, sim_device="cuda:0", headless=headless, cfg=Cfg)
+    env = VelocityTrackingEasyEnv(seed=seed, sim_device="cpu", headless=headless, cfg=Cfg)
     env = HistoryWrapper(env)
 
     policy = load_policy(logdir)
@@ -105,7 +108,14 @@ def main():
     seed = 5
 
     bridge = SimBridgeClient()
-    env, policy = load_env(label, headless=False, seed=seed)
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--headless", action="store_true", default=False)
+    ap.add_argument("--seed", type=int, default=None)
+    args = ap.parse_args()
+    if args.seed is not None:
+        seed = args.seed
+    env, policy = load_env(label, headless=args.headless, seed=seed)
     SEQUENCE_OF_OBJECTS = env.SEQUENCE_OF_OBJECTS
 
     obs = env.reset()
@@ -237,9 +247,13 @@ def main():
         log_file.write(f"{t:.3f},{x:.4f},{y:.4f},{yaw:.4f}\n")
         log_file.flush()
 
-        # IMPORTANT! Add each detected object here:
-        # if YOUR_CONDITION:
-        #     log_detected_object(DETECTED_OBJECT_ID)
+        detected_object_id = bridge.receive_detected_object()
+        if detected_object_id is not None:
+            log_detected_object(detected_object_id)
+
+        # Send object sequence periodically so the ROS2 controller can receive it
+        if i % 50 == 0:
+            bridge.send_object_sequence(SEQUENCE_OF_OBJECTS)
 
         camera_data = env.get_front_camera_data(0)
 

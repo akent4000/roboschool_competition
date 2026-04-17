@@ -24,6 +24,13 @@ JOINT_STATE_PORT = 5009
 IMU_IP = "127.0.0.1"
 IMU_PORT = 5010
 
+DETECTED_IP = "127.0.0.1"
+DETECTED_PORT = 5011
+
+OBJECT_SEQ_IP = "127.0.0.1"
+OBJECT_SEQ_PORT = 5012
+
+
 class SimBridgeClient:
     def __init__(self):
         self.latest_cmd = {
@@ -36,13 +43,17 @@ class SimBridgeClient:
         self.cmd_sock.bind((CMD_IP, CMD_PORT))
         self.cmd_sock.setblocking(False)
 
+        self.detected_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.detected_sock.bind((DETECTED_IP, DETECTED_PORT))
+        self.detected_sock.setblocking(False)
+
         self.state_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.rgb_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # self.depth_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) # UDP
-        self.depth_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM) # TCP
-        self.depth_sock.connect((DEPTH_IP, DEPTH_PORT)) # TCP
+        self.depth_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  # TCP
+        self.depth_sock.connect((DEPTH_IP, DEPTH_PORT))  # TCP
         self.joint_state_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.imu_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.object_seq_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
     def receive_cmd(self):
         try:
@@ -58,6 +69,17 @@ class SimBridgeClient:
 
         return self.latest_cmd.copy()
 
+    def receive_detected_object(self):
+        try:
+            data, _ = self.detected_sock.recvfrom(4096)
+            msg = json.loads(data.decode("utf-8"))
+            return int(msg.get("object_id"))
+        except BlockingIOError:
+            pass
+        except Exception as e:
+            print(f"receive_detected_object error: {e}")
+        return None
+
     def send_state(self, vx, vy, wz):
         msg = {
             "vx": float(vx),
@@ -72,36 +94,12 @@ class SimBridgeClient:
         bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
 
         success, encoded = cv2.imencode(".jpg", bgr)
-        # success, encoded = cv2.imencode(".jpg", rgb)
         if not success:
             print("send_rgb error: JPEG encoding failed")
             return
 
         data = encoded.tobytes()
         self.rgb_sock.sendto(data, (RGB_IP, RGB_PORT))
-
-    # UDP with PNG encoding
-    # def send_depth(self, depth):
-    #     depth_clipped = depth.copy()
-    #     depth_clipped = depth_clipped.astype("float32")
-
-    #     success, encoded = cv2.imencode(".png", depth_clipped)
-    #     if not success:
-    #         print("send_depth error: PNG encoding failed")
-    #         return
-
-    #     data = encoded.tobytes()
-    #     self.depth_sock.sendto(data, (DEPTH_IP, DEPTH_PORT))
-
-    # UDP without PNG encoding
-    # def send_depth(self, depth):
-    #     depth = np.asarray(depth, dtype=np.float32)
-
-    #     h, w = depth.shape[:2]
-    #     header = struct.pack("II", h, w)
-    #     payload = header + depth.tobytes()
-
-    #     self.depth_sock.sendto(payload, (DEPTH_IP, DEPTH_PORT))
 
     # TCP
     def send_depth(self, depth):
@@ -135,3 +133,7 @@ class SimBridgeClient:
         }
         data = json.dumps(msg).encode("utf-8")
         self.imu_sock.sendto(data, (IMU_IP, IMU_PORT))
+
+    def send_object_sequence(self, sequence):
+        data = json.dumps(sequence).encode("utf-8")
+        self.object_seq_sock.sendto(data, (OBJECT_SEQ_IP, OBJECT_SEQ_PORT))

@@ -3,8 +3,6 @@ from __future__ import annotations
 from datetime import datetime
 import os
 
-import torch
-
 
 def _unwrap_env(env):
     while hasattr(env, "env") and getattr(env, "env") is not env:
@@ -13,6 +11,7 @@ def _unwrap_env(env):
 
 
 def get_base_pose_xy_yaw(env):
+    import torch
     base_env = _unwrap_env(env)
     x = base_env.root_states[0, 0].item()
     y = base_env.root_states[0, 1].item()
