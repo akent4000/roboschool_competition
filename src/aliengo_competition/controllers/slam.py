@@ -642,9 +642,9 @@ class SlamController:
 
         # navigation tuning
         self.WP_REACH: float = 0.3       # waypoint reached radius (m)
-        self.MAX_VX: float = 0.65
+        self.MAX_VX: float = 0.55
         self.MIN_VX: float = 0.10
-        self.MAX_WZ: float = 1.0
+        self.MAX_WZ: float = 0.8
         self.TURN_THRESH: float = 0.4    # turn-in-place if angle error > this
         self.OBS_STOP: float = 0.55      # stop if obstacle closer than this (m)
         self.OBS_SLOW: float = 1.0       # slow down zone (m)
@@ -655,7 +655,7 @@ class SlamController:
         self.LOOKAHEAD: float = 0.8      # look-ahead distance on path (m)
 
         # Straight-line acceleration
-        self.BOOST_VX: float = 1.20                    # boosted speed on straights
+        self.BOOST_VX: float = 0.90                    # boosted speed on straights
         self.STRAIGHT_THRESH: float = math.radians(8.0)  # boost when heading error < this
 
         # Low-pass filter for angular velocity (reduces jitter)

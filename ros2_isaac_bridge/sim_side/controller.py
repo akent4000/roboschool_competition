@@ -11,11 +11,14 @@ import math
 import os
 import json
 import time
+import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import rclpy
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 
@@ -85,6 +88,9 @@ class NavigationController(Node):
     def __init__(self):
         super().__init__("controller")
 
+        self._sensor_cb_group = ReentrantCallbackGroup()
+        self._control_cb_group = MutuallyExclusiveCallbackGroup()
+
         # ======================== ROS I/O ========================
         self.cmd_pub = self.create_publisher(Twist, "/cmd_vel", 10)
         self.detected_object_pub = self.create_publisher(
@@ -102,33 +108,42 @@ class NavigationController(Node):
             "/aliengo/base_velocity",
             self._vel_cb,
             qos_profile_sensor_data,
+            callback_group=self._sensor_cb_group,
         )
         self.joint_sub = self.create_subscription(
             JointState,
             "/aliengo/joint_states",
             self._joint_cb,
             qos_profile_sensor_data,
+            callback_group=self._sensor_cb_group,
         )
         self.imu_sub = self.create_subscription(
             Imu,
             "/aliengo/imu",
             self._imu_cb,
             qos_profile_sensor_data,
+            callback_group=self._sensor_cb_group,
         )
         self.rgb_sub = self.create_subscription(
             Image,
             "/aliengo/camera/color/image_raw",
             self._rgb_cb,
             qos_profile_sensor_data,
+            callback_group=self._sensor_cb_group,
         )
         self.depth_sub = self.create_subscription(
             Image,
             "/aliengo/camera/depth/image_raw",
             self._depth_cb,
             qos_profile_sensor_data,
+            callback_group=self._sensor_cb_group,
         )
         self.seq_sub = self.create_subscription(
-            String, "/competition/object_sequence", self._seq_cb, 10
+            String,
+            "/competition/object_sequence",
+            self._seq_cb,
+            10,
+            callback_group=self._sensor_cb_group,
         )
 
         # ======================== Sensor cache ========================
@@ -176,11 +191,12 @@ class NavigationController(Node):
         self._DEPTH_CY = self._DEPTH_H / 2.0
 
         # ======================== Detection tuning ========================
-        self._DETECT_EVERY: int = 5
+        self._DETECT_EVERY: int = max(int(os.environ.get("CTRL_DETECT_EVERY", "3")), 1)
         self._DETECT_CONF: float = 0.6
         self._CONFIRM_DIST_M: float = 0.8
         self._CONFIRM_WAIT_S: float = 2.1
         self._DEPTH_PATCH: int = 15
+        self._YOLO_IMGSZ: int = max(int(os.environ.get("CTRL_YOLO_IMGSZ", "416")), 160)
 
         self._CLASS_CONF: Dict[int, float] = {
             2: 0.82,  # chair — higher threshold to avoid false positives
@@ -196,7 +212,14 @@ class NavigationController(Node):
             0: 0.5, 1: 0.5, 2: 0.5, 3: 0.5, 4: 0.5,
         }
 
-        self._VIS_EVERY: int = 3
+        self._VIS_EVERY: int = max(int(os.environ.get("CTRL_VIS_EVERY", "6")), 1)
+        self._MAP_PUB_INTERVAL_S: float = max(
+            float(os.environ.get("CTRL_MAP_PUB_INTERVAL_S", "0.33")),
+            0.0,
+        )
+        self._MAP_IMAGE_SIZE: int = max(int(os.environ.get("CTRL_MAP_IMAGE_SIZE", "560")), 256)
+        self._SLAM_DEPTH_STRIDE: int = max(int(os.environ.get("CTRL_SLAM_DEPTH_STRIDE", "2")), 1)
+        self._last_map_pub_t: float = -1e9
 
         # ======================== SLAM ========================
         self.slam = SlamController(control_dt=self.control_dt)
@@ -254,9 +277,22 @@ class NavigationController(Node):
         self.motion_mode: str = "idle"
         self._trail: List[Tuple[float, float]] = []
         self._trail_length: int = 500
+        self._rgb_frame_id: int = 0
+
+        self._yolo_lock = threading.Lock()
+        self._yolo_busy: bool = False
+        self._yolo_last_request_step: int = -999
+        self._yolo_last_request_frame_id: int = -1
+        self._yolo_result_version: int = 0
+        self._yolo_last_consumed_version: int = 0
+        self._yolo_last_log_wall_t: float = -1e9
 
         # ======================== Timer (50 Hz matching sim dt) ========================
-        self.create_timer(self.control_dt, self._main_loop)
+        self.create_timer(
+            self.control_dt,
+            self._main_loop,
+            callback_group=self._control_cb_group,
+        )
 
         self.get_logger().info(
             "Navigation controller started. Waiting for sensor data + object_sequence..."
@@ -300,6 +336,7 @@ class NavigationController(Node):
                 .reshape((msg.height, msg.width, 3))
                 .copy()
             )
+            self._rgb_frame_id += 1
         except ValueError:
             self.get_logger().warning("Failed to reshape RGB image.")
 
@@ -352,41 +389,94 @@ class NavigationController(Node):
         )
 
     # ===================================================================
-    # YOLO inference (throttled)
+    # YOLO inference (asynchronous + throttled)
     # ===================================================================
-    def _run_yolo(self, rgb: Optional[np.ndarray], step_idx: int) -> list:
-        if step_idx - self.last_detect_step < self._DETECT_EVERY:
-            return self.detections
-        self.last_detect_step = step_idx
+    def _run_yolo(self, rgb: Optional[np.ndarray], step_idx: int) -> Tuple[list, bool]:
         if self._yolo_model is None or rgb is None:
-            self.detections = []
-            return self.detections
+            with self._yolo_lock:
+                self.detections = []
+            return [], False
 
-        results = self._yolo_model(rgb[..., ::-1], conf=self._DETECT_CONF, verbose=False)
-        dets: list = []
-        for r in results:
-            for box in r.boxes:
-                cls_id = int(box.cls[0])
-                conf = float(box.conf[0])
-                min_conf = self._CLASS_CONF.get(cls_id, self._DETECT_CONF)
-                if conf < min_conf:
-                    continue
-                x1, y1, x2, y2 = box.xyxy[0].tolist()
-                dets.append((
-                    cls_id,
-                    (x1 + x2) / 2.0,
-                    (y1 + y2) / 2.0,
-                    conf,
-                    x2 - x1,  # box width
-                    y2 - y1,  # box height
-                ))
-        self.detections = dets
-        if dets:
-            summary = ", ".join(
-                f"{_NAMES.get(d[0], '?')}({d[3]:.2f})" for d in dets
+        frame_id = self._rgb_frame_id
+        frame_copy = None
+
+        with self._yolo_lock:
+            should_schedule = (
+                (not self._yolo_busy)
+                and (step_idx - self._yolo_last_request_step >= self._DETECT_EVERY)
+                and (frame_id != self._yolo_last_request_frame_id)
             )
-            self.get_logger().info(f"[YOLO] step={step_idx}: {summary}")
-        return dets
+            if should_schedule:
+                self._yolo_busy = True
+                self._yolo_last_request_step = step_idx
+                self._yolo_last_request_frame_id = frame_id
+                frame_copy = rgb.copy()
+
+        if frame_copy is not None:
+            worker = threading.Thread(
+                target=self._yolo_worker,
+                args=(frame_copy,),
+                daemon=True,
+            )
+            worker.start()
+
+        with self._yolo_lock:
+            dets = list(self.detections)
+            fresh = self._yolo_result_version != self._yolo_last_consumed_version
+            if fresh:
+                self._yolo_last_consumed_version = self._yolo_result_version
+
+        return dets, fresh
+
+    def _yolo_worker(self, rgb_frame: np.ndarray) -> None:
+        dets: list = []
+        t0 = time.monotonic()
+        try:
+            model = self._yolo_model
+            if model is None:
+                return
+
+            results = model(
+                rgb_frame[..., ::-1],
+                conf=self._DETECT_CONF,
+                verbose=False,
+                imgsz=self._YOLO_IMGSZ,
+            )
+            for r in results:
+                for box in r.boxes:
+                    cls_id = int(box.cls[0])
+                    conf = float(box.conf[0])
+                    min_conf = self._CLASS_CONF.get(cls_id, self._DETECT_CONF)
+                    if conf < min_conf:
+                        continue
+                    x1, y1, x2, y2 = box.xyxy[0].tolist()
+                    dets.append((
+                        cls_id,
+                        (x1 + x2) / 2.0,
+                        (y1 + y2) / 2.0,
+                        conf,
+                        x2 - x1,
+                        y2 - y1,
+                    ))
+        except Exception as e:
+            self.get_logger().warning(f"[YOLO] inference error: {e}")
+        finally:
+            latency_ms = (time.monotonic() - t0) * 1000.0
+            with self._yolo_lock:
+                self.detections = dets
+                self._yolo_result_version += 1
+                self._yolo_busy = False
+
+            if dets:
+                now = time.monotonic()
+                if now - self._yolo_last_log_wall_t >= 1.0:
+                    summary = ", ".join(
+                        f"{_NAMES.get(d[0], '?')}({d[3]:.2f})" for d in dets
+                    )
+                    self.get_logger().info(
+                        f"[YOLO] {summary} | latency={latency_ms:.0f}ms imgsz={self._YOLO_IMGSZ}"
+                    )
+                    self._yolo_last_log_wall_t = now
 
     # ===================================================================
     # Depth sampling / geometry
@@ -459,12 +549,12 @@ class NavigationController(Node):
         step_idx: int,
         sim_t: float,
     ) -> Optional[int]:
+        dets, yolo_ran = self._run_yolo(rgb, step_idx)
+
         if not self.object_queue or self.queue_idx >= len(self.object_queue):
             return None
 
         target_cls = self.object_queue[self.queue_idx]
-        dets = self._run_yolo(rgb, step_idx)
-        yolo_ran = self.last_detect_step == step_idx
 
         # --- Update consecutive YOLO detection counters ---
         if yolo_ran:
@@ -686,6 +776,11 @@ class NavigationController(Node):
         depth = self.latest_depth
         camera_data: Dict = {"image": rgb, "depth": depth}
 
+        depth_for_slam = depth
+        if depth is not None and self._SLAM_DEPTH_STRIDE > 1:
+            depth_for_slam = depth[:: self._SLAM_DEPTH_STRIDE, :: self._SLAM_DEPTH_STRIDE]
+        slam_camera_data: Dict = {"image": rgb, "depth": depth_for_slam}
+
         # --- Queue progress announcement ---
         if self.queue_idx < len(self.object_queue) and self.announced_queue_idx != self.queue_idx:
             target = self.object_queue[self.queue_idx]
@@ -778,7 +873,7 @@ class NavigationController(Node):
         vy_meas = self.latest_vy if vel_fresh else 0.0
         wz_meas = self.latest_wz if vel_fresh else 0.0
         state = _SimpleState(vx_meas, vy_meas, wz_meas, loop_dt)
-        vx_cmd, vy_cmd, vw_cmd = self.slam.update(step_idx, state, camera_data)
+        vx_cmd, vy_cmd, vw_cmd = self.slam.update(step_idx, state, slam_camera_data)
 
         # --- Motion mode selection ---
         if not vel_fresh:
@@ -811,27 +906,35 @@ class NavigationController(Node):
             cur_target = None
             if self.object_queue and self.queue_idx < len(self.object_queue):
                 cur_target = self.object_queue[self.queue_idx]
-            self.dashboard.update(
-                rgb=rgb,
-                depth=depth,
-                detections=self.detections,
-                target_cls=cur_target,
-                slam=self.slam,
-                vx_cmd=vx,
-                vy_cmd=vy,
-                wz_cmd=vw,
-                queue=self.object_queue,
-                queue_idx=self.queue_idx,
-                sim_t=sim_t,
-                confirm_count=(
-                    int(sim_t - self.confirming_since_t)
-                    if self.confirming_since_t is not None
-                    else 0
-                ),
-                confirm_needed=int(self._CONFIRM_WAIT_S),
-                known_objects=self.known_objects,
-                visited_positions=self.visited_positions,
-            )
+            try:
+                self.dashboard.update(
+                    rgb=rgb,
+                    depth=depth,
+                    detections=self.detections,
+                    target_cls=cur_target,
+                    slam=self.slam,
+                    vx_cmd=vx,
+                    vy_cmd=vy,
+                    wz_cmd=vw,
+                    queue=self.object_queue,
+                    queue_idx=self.queue_idx,
+                    sim_t=sim_t,
+                    confirm_count=(
+                        int(sim_t - self.confirming_since_t)
+                        if self.confirming_since_t is not None
+                        else 0
+                    ),
+                    confirm_needed=int(self._CONFIRM_WAIT_S),
+                    known_objects=self.known_objects,
+                    visited_positions=self.visited_positions,
+                )
+            except Exception as e:
+                self.get_logger().warning(f"[Visualizer] update failed: {e}")
+                try:
+                    self.dashboard.close()
+                except Exception:
+                    pass
+                self.dashboard = None
 
 
     # ===================================================================
@@ -840,7 +943,9 @@ class NavigationController(Node):
     def _publish_dashboard_data(self, sim_t: float, vx: float, vy: float, vw: float) -> None:
         """Publish controller state JSON and rendered SLAM map for the web dashboard."""
         self._publish_controller_state(sim_t, vx, vy, vw)
-        self._publish_map_image()
+        if (sim_t - self._last_map_pub_t) >= self._MAP_PUB_INTERVAL_S:
+            self._publish_map_image()
+            self._last_map_pub_t = sim_t
 
     def _publish_controller_state(self, sim_t: float, vx: float, vy: float, vw: float) -> None:
         rx, ry, rt = self.slam.odom.pose
@@ -1014,7 +1119,7 @@ class NavigationController(Node):
                 legend_y += 16
 
             # Resize to display size
-            disp_size = 720
+            disp_size = self._MAP_IMAGE_SIZE
             img = cv2.resize(img, (disp_size, disp_size), interpolation=cv2.INTER_NEAREST)
 
             # Convert BGR to RGB for ROS Image message
@@ -1037,11 +1142,14 @@ class NavigationController(Node):
 def main(args=None):
     rclpy.init(args=args)
     node = NavigationController()
+    executor = MultiThreadedExecutor(num_threads=3)
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
+        executor.shutdown()
         node.stop_robot()
         if node.dashboard is not None:
             node.dashboard.close()
