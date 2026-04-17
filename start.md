@@ -25,6 +25,8 @@ colcon build
 set +u
 source install/setup.bash
 ros2 launch ros2_bridge_pkg competition.launch.py
+
+ros2 launch ros2_bridge_pkg competition_no_dashboard.launch.py
 ```
 
 Это запустит три ноды:
